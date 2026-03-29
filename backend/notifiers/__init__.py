@@ -1,0 +1,47 @@
+import logging
+from datetime import datetime, timedelta, timezone
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from backend.models import Alert, NotificationLog
+from backend.rule_engine import RuleEngineResult
+from backend.config import settings
+
+logger = logging.getLogger(__name__)
+
+
+async def _within_cooldown(alert: Alert, channel: str, cooldown_minutes: int, db: AsyncSession) -> bool:
+    if cooldown_minutes <= 0:
+        return False
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=cooldown_minutes)
+    stmt = select(NotificationLog.id).join(Alert, NotificationLog.alert_id == Alert.id).where(Alert.fingerprint == alert.fingerprint).where(NotificationLog.channel == channel).where(NotificationLog.success == True).where(NotificationLog.sent_at >= cutoff).limit(1)  # noqa
+    return (await db.execute(stmt)).first() is not None
+
+
+async def dispatch(alert: Alert, rule_result: RuleEngineResult, db: AsyncSession):
+    from backend.maintenance import maintenance as _maintenance
+    if _maintenance.active:
+        return
+    notify_telegram = rule_result.notify_telegram if rule_result.notify_telegram is not None else True
+    notify_email = rule_result.notify_email if rule_result.notify_email is not None else False
+    if rule_result.notify_email is None and alert.severity != "critical":
+        notify_email = False
+    cooldown = rule_result.cooldown_minutes if rule_result.cooldown_minutes is not None else (settings.CRITICAL_COOLDOWN_MINUTES if alert.severity == "critical" else settings.DEFAULT_COOLDOWN_MINUTES)
+    if notify_telegram and not await _within_cooldown(alert, "telegram", cooldown, db):
+        try:
+            from backend.notifiers.telegram_notifier import TelegramNotifier
+            success, error = await TelegramNotifier().send(alert)
+            db.add(NotificationLog(alert_id=alert.id, channel="telegram", recipient=",".join(settings.telegram_chat_id_list) or "configured", success=success, error=error))
+            if success:
+                alert.notified_telegram = True
+        except Exception as e:
+            logger.exception("Telegram error: %s", e)
+    if notify_email and not await _within_cooldown(alert, "email", cooldown, db):
+        try:
+            from backend.notifiers.email_notifier import EmailNotifier
+            success, error = await EmailNotifier().send(alert)
+            db.add(NotificationLog(alert_id=alert.id, channel="email", recipient=",".join(settings.email_to_list) or "configured", success=success, error=error))
+            if success:
+                alert.notified_email = True
+        except Exception as e:
+            logger.exception("Email error: %s", e)
+    await db.commit()
