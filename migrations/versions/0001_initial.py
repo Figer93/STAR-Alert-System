@@ -25,11 +25,6 @@ rule_severity_enum = sa.Enum("critical", "warning", "info", "ok",             na
 def upgrade() -> None:
     bind = op.get_bind()
 
-    # Schema was pre-applied via Supabase — skip if already present
-    result = bind.execute(sa.text("SELECT to_regclass('public.sources')"))
-    if result.scalar() is not None:
-        return
-
     source_type_enum.create(bind, checkfirst=True)
     source_status_enum.create(bind, checkfirst=True)
     alert_severity_enum.create(bind, checkfirst=True)
