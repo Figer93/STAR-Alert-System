@@ -12,6 +12,7 @@ if _is_postgres:
         pool_size=5,
         max_overflow=10,
         pool_pre_ping=True,
+        connect_args={"statement_cache_size": 0},
     )
 else:
     _engine_kwargs["connect_args"] = {"check_same_thread": False}
