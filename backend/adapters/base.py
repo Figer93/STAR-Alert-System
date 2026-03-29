@@ -6,4 +6,6 @@ class BaseAdapter(ABC):
     source_slug: str = ""
 
     @abstractmethod
-    def parse(self, raw_payload: dict) -> RawAlert: ...
+    def parse(self, raw_payload: dict) -> RawAlert:
+        """Parse a raw incoming payload into a normalised RawAlert."""
+        ...

@@ -1,10 +1,13 @@
 import asyncio
 import logging
 from datetime import datetime, timezone
+
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+
 from backend.websocket_manager import ws_manager
 
 logger = logging.getLogger(__name__)
+
 router = APIRouter(tags=["websocket"])
 
 
@@ -17,7 +20,11 @@ async def websocket_endpoint(websocket: WebSocket):
         while True:
             await asyncio.sleep(30)
             try:
-                await websocket.send_json({"event": "ping", "timestamp": datetime.now(timezone.utc).isoformat(), "payload": {}})
+                await websocket.send_json({
+                    "event": "ping",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "payload": {},
+                })
             except Exception:
                 break
 
@@ -26,9 +33,9 @@ async def websocket_endpoint(websocket: WebSocket):
         while True:
             data = await websocket.receive_text()
             if data == "pong":
-                pass
+                pass  # heartbeat response, ignore
     except WebSocketDisconnect:
-        pass
+        logger.debug("WebSocket client disconnected normally")
     except Exception:
         logger.exception("WebSocket error")
     finally:

@@ -10,9 +10,12 @@ services:
     ports:
       - "8000:8000"
     volumes:
+      - ./alerts.db:/app/alerts.db
       - ./logs:/app/logs
     env_file:
       - .env
+    environment:
+      - DATABASE_URL=sqlite+aiosqlite:///./alerts.db
     networks:
       - star_net
     healthcheck:

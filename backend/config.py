@@ -13,14 +13,14 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "sqlite+aiosqlite:///./alerts.db"
 
     TELEGRAM_BOT_TOKEN: str = ""
-    TELEGRAM_CHAT_IDS: str = ""
+    TELEGRAM_CHAT_IDS: str = ""  # comma-separated
 
     SMTP_HOST: str = "smtp.gmail.com"
     SMTP_PORT: int = 587
     SMTP_USER: str = ""
     SMTP_PASSWORD: str = ""
     EMAIL_FROM: str = ""
-    EMAIL_TO: str = ""
+    EMAIL_TO: str = ""  # comma-separated
 
     PFSENSE_SYSLOG_PORT: int = 514
     PFSENSE_SYSLOG_ENABLED: bool = True

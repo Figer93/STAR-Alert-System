@@ -1,14 +1,18 @@
 import asyncio
 from logging.config import fileConfig
+
 from sqlalchemy.ext.asyncio import create_async_engine
+
 from alembic import context
 
 config = context.config
+
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-from backend.database import Base  # noqa
-from backend import models  # noqa
+# Import models so their metadata is populated
+from backend.database import Base  # noqa: E402
+from backend import models  # noqa: E402, F401
 
 target_metadata = Base.metadata
 
@@ -19,7 +23,13 @@ def get_url() -> str:
 
 
 def run_migrations_offline() -> None:
-    context.configure(url=get_url(), target_metadata=target_metadata, literal_binds=True, dialect_opts={"paramstyle": "named"})
+    url = get_url()
+    context.configure(
+        url=url,
+        target_metadata=target_metadata,
+        literal_binds=True,
+        dialect_opts={"paramstyle": "named"},
+    )
     with context.begin_transaction():
         context.run_migrations()
 

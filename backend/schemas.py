@@ -3,6 +3,8 @@ from typing import Any, Optional, Literal
 from pydantic import BaseModel, ConfigDict
 
 
+# ── Source ────────────────────────────────────────────────────────────────────
+
 class SourceBase(BaseModel):
     name: str
     slug: str
@@ -11,20 +13,27 @@ class SourceBase(BaseModel):
     enabled: bool = True
     config: dict = {}
 
+
 class SourceRead(SourceBase):
     model_config = ConfigDict(from_attributes=True)
+
     id: int
     last_seen: Optional[datetime]
     status: Literal["online", "offline", "unknown"]
     created_at: datetime
+
 
 class SourceUpdate(BaseModel):
     enabled: Optional[bool] = None
     config: Optional[dict] = None
     status: Optional[Literal["online", "offline", "unknown"]] = None
 
+
+# ── Alert ─────────────────────────────────────────────────────────────────────
+
 class AlertRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+
     id: int
     source_id: Optional[int]
     severity: Literal["critical", "warning", "info", "ok"]
@@ -43,12 +52,17 @@ class AlertRead(BaseModel):
     resolved_at: Optional[datetime]
     source: Optional[SourceRead] = None
 
+
 class AlertAcknowledge(BaseModel):
     acknowledged_by: str = "dashboard"
+
 
 class AlertsListResponse(BaseModel):
     total: int
     alerts: list[AlertRead]
+
+
+# ── Rule ──────────────────────────────────────────────────────────────────────
 
 class RuleBase(BaseModel):
     name: str
@@ -61,8 +75,10 @@ class RuleBase(BaseModel):
     cooldown_minutes: int = 15
     enabled: bool = True
 
+
 class RuleCreate(RuleBase):
     pass
+
 
 class RuleUpdate(BaseModel):
     name: Optional[str] = None
@@ -75,10 +91,15 @@ class RuleUpdate(BaseModel):
     cooldown_minutes: Optional[int] = None
     enabled: Optional[bool] = None
 
+
 class RuleRead(RuleBase):
     model_config = ConfigDict(from_attributes=True)
+
     id: int
     created_at: datetime
+
+
+# ── Stats ─────────────────────────────────────────────────────────────────────
 
 class StatsSummary(BaseModel):
     critical: int
@@ -89,9 +110,11 @@ class StatsSummary(BaseModel):
     sources_online: int
     sources_total: int
 
+
 class TimelineBucket(BaseModel):
-    hour: str
+    hour: str  # ISO datetime string
     count: int
+
 
 class SourceStats(BaseModel):
     source_id: int
@@ -102,6 +125,9 @@ class SourceStats(BaseModel):
     alert_count_total: int
     alert_count_active: int
 
+
+# ── Ingest (RawAlert) ─────────────────────────────────────────────────────────
+
 class RawAlert(BaseModel):
     source_slug: str
     event_type: str
@@ -110,6 +136,9 @@ class RawAlert(BaseModel):
     severity: Literal["critical", "warning", "info", "ok"] = "info"
     fingerprint_key: str = ""
     raw_payload: dict[str, Any] = {}
+
+
+# ── WebSocket messages ────────────────────────────────────────────────────────
 
 class WSMessage(BaseModel):
     event: str

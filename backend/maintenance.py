@@ -1,3 +1,8 @@
+"""
+Maintenance mode — in-memory state.
+When active, all outbound notifications (Telegram, email) are suppressed.
+The state survives only for the lifetime of the process.
+"""
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -30,8 +35,13 @@ class MaintenanceState:
     def status(self) -> dict:
         if self.active and self._until:
             remaining = int((self._until - datetime.now(timezone.utc)).total_seconds())
-            return {"active": True, "until": self._until.isoformat(), "remaining_seconds": max(0, remaining)}
+            return {
+                "active": True,
+                "until": self._until.isoformat(),
+                "remaining_seconds": max(0, remaining),
+            }
         return {"active": False, "until": None, "remaining_seconds": 0}
 
 
+# Global singleton
 maintenance = MaintenanceState()
