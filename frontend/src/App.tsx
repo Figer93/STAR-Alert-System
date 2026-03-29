@@ -19,7 +19,8 @@ function App() {
   const wasConnected = useRef(false)
 
   const connect = useCallback(() => {
-    const wsUrl = `ws://${window.location.host}/ws`
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
+    const wsUrl = `${wsProtocol}://${window.location.host}/ws`
     const socket = new WebSocket(wsUrl)
     wsRef.current = socket
 
