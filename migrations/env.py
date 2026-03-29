@@ -41,7 +41,11 @@ def do_run_migrations(connection):
 
 
 async def run_migrations_online() -> None:
-    connectable = create_async_engine(get_url())
+    url = get_url()
+    kwargs = {}
+    if "postgresql" in url:
+        kwargs["connect_args"] = {"statement_cache_size": 0}
+    connectable = create_async_engine(url, **kwargs)
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)
     await connectable.dispose()
