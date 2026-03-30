@@ -22,6 +22,9 @@ SEVERITY_MAP: dict[str, str] = {
     "SERVICE_STOPPED":          "warning",
     "PATCH_FAILURE":            "warning",
     "NETWORK_ISSUE":            "warning",
+    # Condition-based alerts (threshold triggers via Notification Channels)
+    "CONDITION_TRIGGERED":      "warning",
+    "CONDITION_RESET":          "ok",
     # Info
     "SCRIPT_FAILURE":           "info",
     "PATCH_SUCCESS":            "info",
@@ -32,7 +35,7 @@ SEVERITY_MAP: dict[str, str] = {
 }
 
 # Events that indicate a device is back online — used by ingest router to resolve alerts
-RESOLUTION_EVENTS = {"DEVICE_ONLINE"}
+RESOLUTION_EVENTS = {"DEVICE_ONLINE", "CONDITION_RESET"}
 
 
 class NinjaRMMAdapter(BaseAdapter):
