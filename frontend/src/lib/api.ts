@@ -62,6 +62,12 @@ export const updateSource = (id: number, data: { enabled?: boolean; config?: Rec
 export const testSource = (id: number) =>
   api.get(`/sources/${id}/test`).then(r => r.data)
 
+export const createSource = (data: Omit<Source, 'id' | 'last_seen' | 'status' | 'created_at'>) =>
+  api.post<Source>('/sources', data).then(r => r.data)
+
+export const deleteSource = (id: number) =>
+  api.delete(`/sources/${id}`)
+
 // ── Stats ─────────────────────────────────────────────────────────────────────
 
 export const getStatsSummary = () =>

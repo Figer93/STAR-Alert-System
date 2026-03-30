@@ -14,6 +14,10 @@ class SourceBase(BaseModel):
     config: dict = {}
 
 
+class SourceCreate(SourceBase):
+    pass
+
+
 class SourceRead(SourceBase):
     model_config = ConfigDict(from_attributes=True)
 

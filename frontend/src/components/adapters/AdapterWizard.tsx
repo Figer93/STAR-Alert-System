@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, ChevronRight, ChevronLeft, CheckCircle, Loader2, AlertTriangle, Wifi, Shield, Activity, Globe } from 'lucide-react'
 import { toast } from 'sonner'
+import { createSource, testSource } from '../../lib/api'
 
 interface Props { onClose: () => void; onComplete: () => void }
 
@@ -54,6 +55,8 @@ export default function AdapterWizard({ onClose, onComplete }: Props) {
   const [config, setConfig]   = useState<Record<string, string>>({})
   const [testing, setTesting] = useState(false)
   const [testOk, setTestOk]   = useState<boolean | null>(null)
+  const [createdSourceId, setCreatedSourceId] = useState<number | null>(null)
+  const [creating, setCreating] = useState(false)
 
   const adapter = ADAPTERS.find(a => a.id === selected)
 
@@ -69,14 +72,39 @@ export default function AdapterWizard({ onClose, onComplete }: Props) {
   const handleTest = async () => {
     setTesting(true)
     setTestOk(null)
-    // Simulate a test connection (real implementation would POST to /api/sources/test-config)
-    await new Promise(r => setTimeout(r, 1800))
-    setTesting(false)
-    setTestOk(true)  // In real impl: check response
+    try {
+      let sourceId = createdSourceId
+      if (sourceId === null) {
+        setCreating(true)
+        const isCustom = selected === 'custom'
+        const slug = isCustom ? config['slug'] : selected!
+        const name = isCustom ? (config['display_name'] || config['slug']) : adapter!.name
+        const sourceType = selected === 'pfsense' ? 'syslog' : 'webhook'
+        const created = await createSource({
+          name,
+          slug,
+          adapter: isCustom ? 'custom' : selected!,
+          type: sourceType as 'webhook' | 'syslog' | 'poll' | 'push',
+          enabled: true,
+          config: isCustom
+            ? {}
+            : Object.fromEntries(Object.entries(config).filter(([k]) => k !== 'slug' && k !== 'display_name')),
+        })
+        sourceId = created.id
+        setCreatedSourceId(created.id)
+        setCreating(false)
+      }
+      await testSource(sourceId)
+      setTestOk(true)
+    } catch {
+      setTestOk(false)
+    } finally {
+      setTesting(false)
+      setCreating(false)
+    }
   }
 
   const handleFinish = () => {
-    toast.success(`${adapter?.name} adapter added successfully`)
     onComplete()
     onClose()
   }
@@ -188,14 +216,20 @@ export default function AdapterWizard({ onClose, onComplete }: Props) {
                       />
                     </div>
                   ))}
+                  {adapter.id === 'pfsense' && window.location.protocol === 'https:' && (
+                    <div style={{ background: 'rgba(234,179,8,0.08)', border: '1px solid rgba(234,179,8,0.3)', borderRadius: 'var(--radius-sm)', padding: '10px 12px', fontSize: 11, color: '#eab308', display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                      <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+                      <span><strong>Cloud deployment detected.</strong> Railway does not expose UDP ports — the pfSense syslog listener will not receive data. Consider a self-hosted deployment for pfSense integration.</span>
+                    </div>
+                  )}
                   {adapter.id === 'ninjarmm' && (
                     <div style={{ background: 'var(--accent-dim)', border: '1px solid rgba(59,130,246,0.2)', borderRadius: 'var(--radius-sm)', padding: '10px 12px', fontSize: 11, color: 'var(--text-muted)' }}>
-                      Configure NinjaRMM webhook URL to: <span className="mono" style={{ color: 'var(--accent)' }}>http://YOUR_IP:8000/api/ingest/ninjarmm</span>
+                      Configure NinjaRMM webhook URL to: <span className="mono" style={{ color: 'var(--accent)' }}>{window.location.origin}/api/ingest/ninjarmm</span>
                     </div>
                   )}
                   {adapter.id === 'pingplotter' && (
                     <div style={{ background: 'var(--accent-dim)', border: '1px solid rgba(59,130,246,0.2)', borderRadius: 'var(--radius-sm)', padding: '10px 12px', fontSize: 11, color: 'var(--text-muted)' }}>
-                      Configure PingPlotter webhook URL to: <span className="mono" style={{ color: 'var(--accent)' }}>http://YOUR_IP:8000/api/ingest/pingplotter</span>
+                      Configure PingPlotter webhook URL to: <span className="mono" style={{ color: 'var(--accent)' }}>{window.location.origin}/api/ingest/pingplotter</span>
                     </div>
                   )}
                 </div>
@@ -271,8 +305,17 @@ export default function AdapterWizard({ onClose, onComplete }: Props) {
           {step < 3 ? (
             <button
               className="btn btn-primary"
-              onClick={() => { if (step === 2 && testOk === null) { handleTest().then(() => setStep(3)) } else { setStep(s => s + 1) } }}
-              disabled={step === 0 && !selected}
+              onClick={() => {
+                if (step === 1) {
+                  if (selected === 'custom' && !config['slug']) { toast.warning('Please enter a source slug'); return }
+                  setStep(s => s + 1)
+                } else if (step === 2) {
+                  if (testOk === null) { handleTest().then(() => setStep(3)) } else { setStep(3) }
+                } else {
+                  setStep(s => s + 1)
+                }
+              }}
+              disabled={(step === 0 && !selected) || creating}
               style={{ gap: 6 }}
             >
               {step === 2 ? 'Finish Setup' : 'Continue'} <ChevronRight size={14} />

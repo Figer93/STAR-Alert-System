@@ -9,10 +9,10 @@ import {
   useSortable, arrayMove,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { GripVertical, Plus, Radio, Zap, Loader2 } from 'lucide-react'
+import { GripVertical, Plus, Radio, Zap, Loader2, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import type { Source } from '../types'
-import { getSources, updateSource, testSource } from '../lib/api'
+import { getSources, updateSource, testSource, deleteSource } from '../lib/api'
 import AdapterWizard from '../components/adapters/AdapterWizard'
 
 function relativeTime(iso: string | null) {
@@ -32,13 +32,14 @@ const STATUS_GLOW: Record<string, string> = {
 
 // ─── Sortable source card ────────────────────────────────────────────────────
 function SourceCard({
-  source, testing, testResult, onToggle, onTest,
+  source, testing, testResult, onToggle, onTest, onDelete,
 }: {
   source: Source
   testing: boolean
   testResult: string | null
   onToggle: () => void
   onTest: () => void
+  onDelete: () => void
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: source.id })
@@ -139,6 +140,14 @@ function SourceCard({
               {testing ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <Zap size={12} />}
               {testing ? 'Testing…' : 'Send Test'}
             </button>
+            <button
+              className="btn"
+              onClick={onDelete}
+              title="Remove source"
+              style={{ padding: '0 10px', color: 'var(--red)' }}
+            >
+              <Trash2 size={13} />
+            </button>
           </div>
         </div>
       </div>
@@ -173,6 +182,15 @@ export default function Sources() {
       const updated = await updateSource(s.id, { enabled: !s.enabled })
       setSources(prev => prev.map(x => x.id === s.id ? updated : x))
       toast.success(`${s.name} ${updated.enabled ? 'enabled' : 'disabled'}`)
+    } catch { /* toast from interceptor */ }
+  }
+
+  const handleDelete = async (s: Source) => {
+    if (!confirm(`Remove "${s.name}"? This cannot be undone.`)) return
+    try {
+      await deleteSource(s.id)
+      setSources(prev => prev.filter(x => x.id !== s.id))
+      toast.success(`${s.name} removed`)
     } catch { /* toast from interceptor */ }
   }
 
@@ -237,6 +255,7 @@ export default function Sources() {
                   testResult={testResults[s.id] ?? null}
                   onToggle={() => toggleEnabled(s)}
                   onTest={() => runTest(s)}
+                  onDelete={() => handleDelete(s)}
                 />
               ))}
             </div>
