@@ -101,16 +101,36 @@ async def ingest_ninjarmm(request: Request, db: AsyncSession = Depends(get_db)):
     payload = await request.json()
     await _update_source_heartbeat("ninjarmm", db)
 
-    event_type  = payload.get("eventType", "UNKNOWN")
-    device_name = payload.get("deviceName", "Unknown Device")
+    # Support both Activity webhook format (eventType) and Condition format (activityType+statusCode)
+    activity_type = payload.get("activityType") or payload.get("eventType", "UNKNOWN")
+    status_code   = payload.get("statusCode", "")
+    device_id     = payload.get("deviceId")
+    device_name   = payload.get("deviceName") or (f"Device #{device_id}" if device_id else "Unknown Device")
 
-    # DEVICE_ONLINE resolves any active DEVICE_OFFLINE alert for this device
+    # Build effective event type (mirrors adapter logic)
+    if activity_type == "CONDITION" and status_code:
+        effective_event_type = f"CONDITION_{status_code.upper()}"
+    else:
+        effective_event_type = activity_type
+
     from backend.adapters.ninjarmm_adapter import RESOLUTION_EVENTS
-    if event_type in RESOLUTION_EVENTS:
-        resolved = await _resolve_alerts_by_fingerprint_key(
-            "ninjarmm", "device_offline", f"{device_name}:DEVICE_OFFLINE", db
-        )
-        logger.info("NinjaRMM DEVICE_ONLINE: resolved %d alert(s) for %s", resolved, device_name)
+    if effective_event_type in RESOLUTION_EVENTS:
+        if effective_event_type == "CONDITION_RESET":
+            # Resolve the matching CONDITION_TRIGGERED alert using same fingerprint as adapter
+            data      = payload.get("data") or {}
+            msg_data  = data.get("message") or {}
+            cond_code = msg_data.get("code", "") or effective_event_type
+            fingerprint_key = f"{device_name}:{cond_code}"
+            resolved = await _resolve_alerts_by_fingerprint_key(
+                "ninjarmm", "condition_triggered", fingerprint_key, db
+            )
+            logger.info("NinjaRMM CONDITION_RESET: resolved %d alert(s) for %s cond=%s", resolved, device_name, cond_code)
+        else:
+            # DEVICE_ONLINE resolves any active DEVICE_OFFLINE alert for this device
+            resolved = await _resolve_alerts_by_fingerprint_key(
+                "ninjarmm", "device_offline", f"{device_name}:DEVICE_OFFLINE", db
+            )
+            logger.info("NinjaRMM DEVICE_ONLINE: resolved %d alert(s) for %s", resolved, device_name)
         return {"status": "resolved", "resolved_count": resolved}
 
     adapter = ADAPTER_REGISTRY["ninjarmm"]()
