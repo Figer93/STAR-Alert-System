@@ -70,9 +70,12 @@ async def _source_offline_checker():
             cutoff = datetime.now(timezone.utc) - timedelta(minutes=OFFLINE_THRESHOLD_MINUTES)
 
             async with AsyncSessionLocal() as db:
+                # Webhook sources only fire when events occur — silence is normal.
+                # Only check syslog/poll/push sources where continuous traffic is expected.
                 stmt = (
                     select(Source)
                     .where(Source.enabled == True)  # noqa: E712
+                    .where(Source.type != "webhook")
                     .where(Source.status == "online")
                     .where(Source.last_seen < cutoff)
                 )
