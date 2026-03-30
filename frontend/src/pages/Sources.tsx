@@ -9,7 +9,7 @@ import {
   useSortable, arrayMove,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { GripVertical, Plus, Radio, Zap, Loader2, Trash2, ChevronDown, ChevronUp, Copy, BookOpen, Activity, Wifi, Shield, Globe } from 'lucide-react'
+import { GripVertical, Plus, Radio, Zap, Loader2, Trash2, ChevronDown, ChevronUp, Copy, BookOpen, Activity, Wifi, Shield, Globe, X, CheckCircle } from 'lucide-react'
 import { toast } from 'sonner'
 import type { Source } from '../types'
 import { getSources, updateSource, testSource, deleteSource } from '../lib/api'
@@ -33,6 +33,7 @@ const STATUS_GLOW: Record<string, string> = {
 // ─── Sortable source card ────────────────────────────────────────────────────
 function SourceCard({
   source, testing, testResult, onToggle, onTest, onDelete,
+  verifying, verifyCountdown, verifyResult, onVerify, onCancelVerify,
 }: {
   source: Source
   testing: boolean
@@ -40,6 +41,11 @@ function SourceCard({
   onToggle: () => void
   onTest: () => void
   onDelete: () => void
+  verifying: boolean
+  verifyCountdown: number
+  verifyResult: 'success' | 'timeout' | null
+  onVerify: () => void
+  onCancelVerify: () => void
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: source.id })
@@ -93,6 +99,15 @@ function SourceCard({
               }}>
                 {source.status}
               </span>
+              {!source.last_seen && (
+                <span style={{
+                  fontSize: 9, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase',
+                  color: '#f59e0b', background: 'rgba(245,158,11,0.1)',
+                  border: '1px solid rgba(245,158,11,0.25)',
+                  borderRadius: 4, padding: '1px 5px',
+                  animation: 'pulse-opacity 2s ease-in-out infinite',
+                }}>No data yet</span>
+              )}
             </div>
 
             {/* Toggle */}
@@ -129,26 +144,59 @@ function SourceCard({
             </div>
           )}
 
+          {/* Verify result */}
+          {verifyResult === 'success' && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, padding: '5px 10px', borderRadius: 'var(--radius-sm)', background: 'var(--green-dim)', color: 'var(--green)', border: '1px solid rgba(34,197,94,0.2)' }}>
+              <CheckCircle size={12} /> Webhook received! Connection verified.
+            </div>
+          )}
+          {verifyResult === 'timeout' && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, padding: '5px 10px', borderRadius: 'var(--radius-sm)', background: 'rgba(245,158,11,0.08)', color: '#f59e0b', border: '1px solid rgba(245,158,11,0.25)', flexWrap: 'wrap' }}>
+              <span style={{ flex: 1 }}>No webhook received — check your integration settings</span>
+              <button className="btn" onClick={onVerify} style={{ padding: '1px 8px', fontSize: 10 }}>Retry</button>
+            </div>
+          )}
+
           {/* Actions */}
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button
-              className="btn"
-              onClick={onTest}
-              disabled={testing}
-              style={{ gap: 6, flex: 1, justifyContent: 'center' }}
-            >
-              {testing ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <Zap size={12} />}
-              {testing ? 'Testing…' : 'Send Test'}
-            </button>
-            <button
-              className="btn"
-              onClick={onDelete}
-              title="Remove source"
-              style={{ padding: '0 10px', color: 'var(--red)' }}
-            >
-              <Trash2 size={13} />
-            </button>
-          </div>
+          {verifying ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Radio size={13} style={{ animation: 'pulse-opacity 1s ease-in-out infinite', color: 'var(--accent)', flexShrink: 0 }} />
+              <span style={{ fontSize: 11, color: 'var(--text-muted)', flex: 1 }}>Listening for webhook… {verifyCountdown}s</span>
+              <button className="btn" onClick={onCancelVerify} title="Cancel" style={{ padding: '0 8px' }}>
+                <X size={12} />
+              </button>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button
+                className="btn"
+                onClick={onTest}
+                disabled={testing}
+                style={{ gap: 6, flex: 1, justifyContent: 'center' }}
+              >
+                {testing ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <Zap size={12} />}
+                {testing ? 'Testing…' : 'Send Test'}
+              </button>
+              {!source.last_seen && (
+                <button
+                  className="btn"
+                  onClick={onVerify}
+                  title="Listen for a real incoming webhook"
+                  style={{ gap: 5, padding: '0 10px', color: 'var(--accent)' }}
+                >
+                  <Radio size={12} /> Verify
+                </button>
+              )}
+              <button
+                className="btn"
+                onClick={onDelete}
+                title="Remove source"
+                style={{ padding: '0 10px', color: 'var(--red)' }}
+              >
+                <Trash2 size={13} />
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </motion.div>
@@ -190,11 +238,16 @@ export default function Sources() {
   const [testResults, setTestResults] = useState<Record<number, string>>({})
   const [showWizard, setShowWizard] = useState(false)
   const [showGuide, setShowGuide]   = useState(false)
+  const [verifying, setVerifying]   = useState<number | null>(null)
+  const [verifyCountdown, setVerifyCountdown] = useState(0)
+  const [verifyResult, setVerifyResult] = useState<Record<number, 'success' | 'timeout'>>({})
+  const verifyIntervalRef = React.useRef<ReturnType<typeof setInterval> | null>(null)
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
 
   const load = () => getSources().then(setSources).finally(() => setLoading(false))
   useEffect(() => { load() }, [])
+  useEffect(() => () => { if (verifyIntervalRef.current) clearInterval(verifyIntervalRef.current) }, [])
 
   const handleDragEnd = ({ active, over }: DragEndEvent) => {
     if (!over || active.id === over.id) return
@@ -220,6 +273,42 @@ export default function Sources() {
       setSources(prev => prev.filter(x => x.id !== s.id))
       toast.success(`${s.name} removed`)
     } catch { /* toast from interceptor */ }
+  }
+
+  const cancelVerify = () => {
+    if (verifyIntervalRef.current) clearInterval(verifyIntervalRef.current)
+    setVerifying(null)
+  }
+
+  const startVerify = (s: Source) => {
+    if (verifyIntervalRef.current) clearInterval(verifyIntervalRef.current)
+    setVerifying(s.id)
+    setVerifyCountdown(60)
+    setVerifyResult(prev => { const n = { ...prev }; delete n[s.id]; return n })
+
+    const snapshot = s.last_seen
+    const deadline = Date.now() + 60_000
+
+    verifyIntervalRef.current = setInterval(async () => {
+      const updated = await getSources()
+      const current = updated.find(x => x.id === s.id)
+      if (current?.last_seen !== snapshot) {
+        clearInterval(verifyIntervalRef.current!)
+        setSources(updated)
+        setVerifying(null)
+        setVerifyResult(prev => ({ ...prev, [s.id]: 'success' }))
+        setTimeout(() => setVerifyResult(prev => { const n = { ...prev }; delete n[s.id]; return n }), 5000)
+        return
+      }
+      const remaining = Math.ceil((deadline - Date.now()) / 1000)
+      if (remaining <= 0) {
+        clearInterval(verifyIntervalRef.current!)
+        setVerifying(null)
+        setVerifyResult(prev => ({ ...prev, [s.id]: 'timeout' }))
+        return
+      }
+      setVerifyCountdown(remaining)
+    }, 2000)
   }
 
   const runTest = async (s: Source) => {
@@ -325,6 +414,11 @@ export default function Sources() {
                   onToggle={() => toggleEnabled(s)}
                   onTest={() => runTest(s)}
                   onDelete={() => handleDelete(s)}
+                  verifying={verifying === s.id}
+                  verifyCountdown={verifyCountdown}
+                  verifyResult={verifyResult[s.id] ?? null}
+                  onVerify={() => startVerify(s)}
+                  onCancelVerify={cancelVerify}
                 />
               ))}
             </div>
@@ -361,7 +455,10 @@ export default function Sources() {
         )}
       </AnimatePresence>
 
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      <style>{`
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @keyframes pulse-opacity { 0%,100%{opacity:1} 50%{opacity:0.4} }
+      `}</style>
     </div>
   )
 }
