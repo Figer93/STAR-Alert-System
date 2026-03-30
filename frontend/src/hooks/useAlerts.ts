@@ -68,6 +68,8 @@ export function useAlerts() {
     socket.onopen = () => {
       setWsConnected(true)
       retryDelay.current = 1000
+      // Re-sync on reconnect to pick up any alerts missed during the disconnect window
+      fetchAll()
     }
 
     socket.onmessage = (e) => {

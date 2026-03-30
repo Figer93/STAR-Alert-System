@@ -69,23 +69,20 @@ export default function AlertFeed({ alerts, sources, onAcknowledge, loading }: P
         <AlertFilters filters={filters} sources={sources} onChange={setFilters} />
       </div>
 
-      {/* Feed */}
-      {filtered.length === 0 ? (
-        <div style={{
-          background: 'var(--bg-surface)', border: '1px solid var(--border)',
-          borderRadius: 'var(--radius)', padding: '32px 24px', textAlign: 'center',
-          display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10,
-        }}>
-          <BellOff size={28} color="var(--text-dim)" />
-          <span style={{ color: 'var(--text-dim)', fontSize: 13 }}>
-            No alerts match the current filters
-          </span>
-        </div>
-      ) : (
-        <div
-          ref={parentRef}
-          style={{ overflow: 'auto', flex: 1 }}
-        >
+      {/* Feed — parentRef must always be mounted so virtualizer has a scroll container */}
+      <div ref={parentRef} style={{ overflow: 'auto', flex: 1 }}>
+        {filtered.length === 0 ? (
+          <div style={{
+            background: 'var(--bg-surface)', border: '1px solid var(--border)',
+            borderRadius: 'var(--radius)', padding: '32px 24px', textAlign: 'center',
+            display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10,
+          }}>
+            <BellOff size={28} color="var(--text-dim)" />
+            <span style={{ color: 'var(--text-dim)', fontSize: 13 }}>
+              No alerts match the current filters
+            </span>
+          </div>
+        ) : (
           <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
             <AnimatePresence initial={false}>
               {virtualizer.getVirtualItems().map(vItem => {
@@ -109,8 +106,8 @@ export default function AlertFeed({ alerts, sources, onAcknowledge, loading }: P
               })}
             </AnimatePresence>
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
       <AlertDetail alert={detail} onClose={() => setDetail(null)} />
     </div>
