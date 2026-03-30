@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import React, { useState, useEffect } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
   DndContext, closestCenter, PointerSensor, useSensor, useSensors,
@@ -9,7 +9,7 @@ import {
   useSortable, arrayMove,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { GripVertical, Plus, Radio, Zap, Loader2, Trash2 } from 'lucide-react'
+import { GripVertical, Plus, Radio, Zap, Loader2, Trash2, ChevronDown, ChevronUp, Copy, BookOpen, Activity, Wifi, Shield, Globe } from 'lucide-react'
 import { toast } from 'sonner'
 import type { Source } from '../types'
 import { getSources, updateSource, testSource, deleteSource } from '../lib/api'
@@ -155,6 +155,33 @@ function SourceCard({
   )
 }
 
+// ─── Adapter info row (setup guide) ─────────────────────────────────────────
+function AdapterInfoRow({ icon, name, note, url }: { icon: React.ReactNode; name: string; note: string; url: string }) {
+  const copy = () => {
+    navigator.clipboard.writeText(url)
+    toast.success('Copied to clipboard')
+  }
+  return (
+    <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', background: 'var(--accent-dim)', border: '1px solid rgba(59,130,246,0.2)', borderRadius: 'var(--radius-sm)', padding: '9px 12px', fontSize: 11, color: 'var(--text-muted)' }}>
+      <span style={{ flexShrink: 0, marginTop: 1, color: 'var(--accent)' }}>{icon}</span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <strong style={{ color: 'var(--text-head)' }}>{name}</strong> — {note}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 5 }}>
+          <span className="mono" style={{ color: 'var(--accent)', fontSize: 11, wordBreak: 'break-all' }}>{url}</span>
+          <button
+            className="btn"
+            onClick={copy}
+            title="Copy URL"
+            style={{ padding: '2px 6px', flexShrink: 0 }}
+          >
+            <Copy size={11} />
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── Main page ───────────────────────────────────────────────────────────────
 export default function Sources() {
   const [sources, setSources]       = useState<Source[]>([])
@@ -162,6 +189,7 @@ export default function Sources() {
   const [testing, setTesting]       = useState<number | null>(null)
   const [testResults, setTestResults] = useState<Record<number, string>>({})
   const [showWizard, setShowWizard] = useState(false)
+  const [showGuide, setShowGuide]   = useState(false)
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
 
@@ -226,6 +254,47 @@ export default function Sources() {
         </button>
       </div>
 
+      {/* Setup guide */}
+      <div style={{ flexShrink: 0 }}>
+        <button
+          className="btn"
+          onClick={() => setShowGuide(v => !v)}
+          style={{ gap: 6, fontSize: 11, padding: '4px 10px', color: 'var(--text-muted)' }}
+        >
+          <BookOpen size={12} />
+          Setup Guide
+          {showGuide ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+        </button>
+        {showGuide && (
+          <div className="card" style={{ marginTop: 8, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {/* NinjaRMM */}
+            <AdapterInfoRow
+              icon={<Activity size={13} />}
+              name="NinjaRMM"
+              note="In NinjaRMM → Administration → Webhooks, add a new webhook and paste this URL:"
+              url={`${window.location.origin}/api/ingest/ninjarmm`}
+            />
+            {/* PingPlotter */}
+            <AdapterInfoRow
+              icon={<Wifi size={13} />}
+              name="PingPlotter"
+              note="In PingPlotter → Alerts → Alert Notifications, set the webhook URL to:"
+              url={`${window.location.origin}/api/ingest/pingplotter`}
+            />
+            {/* pfSense */}
+            <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', background: 'rgba(245,158,11,0.07)', border: '1px solid rgba(245,158,11,0.25)', borderRadius: 'var(--radius-sm)', padding: '9px 12px', fontSize: 11, color: 'var(--text-muted)' }}>
+              <Shield size={13} style={{ flexShrink: 0, marginTop: 1, color: '#f59e0b' }} />
+              <span><strong style={{ color: 'var(--text-head)' }}>pfSense</strong> — In Status → System Logs → Settings, set Remote Log Server to <span className="mono" style={{ color: 'var(--accent)' }}>your-server-ip:514</span> (UDP). <span style={{ color: '#f59e0b' }}>Note: Railway cannot receive UDP — self-hosted deployment required for pfSense.</span></span>
+            </div>
+            {/* Custom */}
+            <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', background: 'var(--accent-dim)', border: '1px solid rgba(59,130,246,0.2)', borderRadius: 'var(--radius-sm)', padding: '9px 12px', fontSize: 11, color: 'var(--text-muted)' }}>
+              <Globe size={13} style={{ flexShrink: 0, marginTop: 1, color: 'var(--accent)' }} />
+              <span><strong style={{ color: 'var(--text-head)' }}>Custom Webhook</strong> — After adding a custom adapter, your endpoint will be: <span className="mono" style={{ color: 'var(--accent)' }}>{window.location.origin}/api/ingest/<span style={{ opacity: 0.6 }}>{'{your-slug}'}</span></span></span>
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* Hint */}
       {!loading && sources.length > 1 && (
         <div style={{ fontSize: 11, color: 'var(--text-dim)', display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -265,11 +334,21 @@ export default function Sources() {
 
       {/* Empty state */}
       {!loading && sources.length === 0 && (
-        <div className="card" style={{ padding: '40px 24px', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
-          <Radio size={32} color="var(--text-dim)" />
-          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-head)' }}>No adapters yet</div>
-          <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>Add your first adapter to start receiving alerts.</div>
-          <button className="btn btn-primary" onClick={() => setShowWizard(true)} style={{ gap: 7, marginTop: 4 }}>
+        <div className="card" style={{ padding: '36px 24px', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14 }}>
+          <Radio size={28} color="var(--text-dim)" />
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-head)', marginBottom: 4 }}>No adapters connected yet</div>
+            <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>Follow these steps to start receiving alerts:</div>
+          </div>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center' }}>
+            {(['Click Add Adapter', 'Choose your integration', 'Configure & test'] as const).map((label, i) => (
+              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 7, background: 'var(--bg-raised)', border: '1px solid var(--border-bright)', borderRadius: 'var(--radius)', padding: '7px 12px', fontSize: 12, color: 'var(--text-muted)' }}>
+                <span style={{ width: 18, height: 18, borderRadius: '50%', background: 'var(--accent)', color: '#fff', fontSize: 10, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>{i + 1}</span>
+                {label}
+              </div>
+            ))}
+          </div>
+          <button className="btn btn-primary" onClick={() => setShowWizard(true)} style={{ gap: 7, marginTop: 2 }}>
             <Plus size={14} /> Add Adapter
           </button>
         </div>
