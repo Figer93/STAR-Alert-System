@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.config import settings
 from backend.database import init_db
-from backend.routers import alerts, ingest, maintenance, notifications, rules, sources, stats, ws
+from backend.routers import alerts, ingest, maintenance, notifications, notification_settings, rules, sources, stats, ws
 from backend.websocket_manager import ws_manager
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -122,10 +122,50 @@ async def _source_offline_checker():
 
 # ── Lifespan ──────────────────────────────────────────────────────────────────
 
+async def _seed_channel_settings() -> None:
+    """Insert default notification channel settings rows if they don't exist yet."""
+    from backend.database import AsyncSessionLocal
+    from backend.models import NotificationChannelSettings
+
+    DEFAULTS = {
+        "telegram": {
+            "enabled": True,
+            "send_resolutions": False,
+            "severity_filter": "",           # all severities
+            "message_template": "",          # use built-in default
+            "resolution_template": "",
+            "field_toggles": {"source": True, "timestamp": True, "count": False, "message": True},
+            "parse_mode": "plain",
+            "subject_template": "",
+            "updated_at": datetime.now(timezone.utc),
+        },
+        "email": {
+            "enabled": True,
+            "send_resolutions": False,
+            "severity_filter": "critical",   # preserve existing "critical only" default
+            "message_template": "",
+            "resolution_template": "",
+            "field_toggles": {"source": True, "timestamp": True, "count": True, "message": True},
+            "parse_mode": "plain",
+            "subject_template": "",
+            "updated_at": datetime.now(timezone.utc),
+        },
+    }
+
+    async with AsyncSessionLocal() as db:
+        for channel, defaults in DEFAULTS.items():
+            existing = await db.get(NotificationChannelSettings, channel)
+            if not existing:
+                db.add(NotificationChannelSettings(channel=channel, **defaults))
+        await db.commit()
+    logger.info("Notification channel settings seeded")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting %s...", settings.APP_NAME)
     await init_db()
+    await _seed_channel_settings()
     logger.info("Database initialised")
 
     # pfSense UDP syslog listener
@@ -183,6 +223,7 @@ app.include_router(stats.router)
 app.include_router(rules.router)
 app.include_router(ingest.router)
 app.include_router(notifications.router)
+app.include_router(notification_settings.router)
 app.include_router(maintenance.router)
 app.include_router(ws.router)
 

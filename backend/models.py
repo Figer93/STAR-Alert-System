@@ -90,3 +90,36 @@ class NotificationLog(Base):
     error: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     alert: Mapped["Alert"] = relationship("Alert", back_populates="notification_logs")
+
+
+class NotificationChannelSettings(Base):
+    """
+    Per-channel notification configuration (one row per channel).
+    Two rows are auto-seeded on startup: "telegram" and "email".
+    """
+    __tablename__ = "notification_channel_settings"
+
+    channel: Mapped[str] = mapped_column(String(20), primary_key=True)
+
+    # Global toggles
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    send_resolutions: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # Severity filter — comma-separated list e.g. "critical,warning"
+    # Empty string means "send for all severities"
+    severity_filter: Mapped[str] = mapped_column(String(60), default="")
+
+    # Message templates — empty string means "use built-in default"
+    message_template: Mapped[str] = mapped_column(Text, default="")
+    resolution_template: Mapped[str] = mapped_column(Text, default="")
+
+    # Field inclusion toggles stored as JSON: {source, timestamp, count, message}
+    field_toggles: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    # Telegram-specific
+    parse_mode: Mapped[str] = mapped_column(String(10), default="plain")
+
+    # Email-specific
+    subject_template: Mapped[str] = mapped_column(String(500), default="")
+
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

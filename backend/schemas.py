@@ -148,3 +148,31 @@ class WSMessage(BaseModel):
     event: str
     timestamp: datetime
     payload: dict[str, Any]
+
+
+# ── Notification Channel Settings ─────────────────────────────────────────────
+
+class NotificationChannelSettingsRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    channel: str
+    enabled: bool
+    send_resolutions: bool
+    severity_filter: str
+    message_template: str
+    resolution_template: str
+    field_toggles: dict
+    parse_mode: str
+    subject_template: str
+    updated_at: datetime
+
+
+class NotificationChannelSettingsUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    send_resolutions: Optional[bool] = None
+    severity_filter: Optional[str] = None
+    message_template: Optional[str] = None
+    resolution_template: Optional[str] = None
+    field_toggles: Optional[dict] = None
+    parse_mode: Optional[str] = None
+    subject_template: Optional[str] = None

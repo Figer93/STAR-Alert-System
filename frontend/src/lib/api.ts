@@ -112,6 +112,30 @@ export const startMaintenance = (minutes: number) =>
 export const stopMaintenance = () =>
   api.post<MaintenanceStatus>('/maintenance/stop').then(r => r.data)
 
+// ── Notification Channel Settings ─────────────────────────────────────────────
+
+export interface NotificationChannelSettings {
+  channel: string
+  enabled: boolean
+  send_resolutions: boolean
+  severity_filter: string        // comma-separated e.g. "critical,warning" — empty = all
+  message_template: string       // empty = use built-in default
+  resolution_template: string
+  field_toggles: Record<string, boolean>
+  parse_mode: 'plain' | 'html'
+  subject_template: string       // email only
+  updated_at: string
+}
+
+export const getChannelSettings = (channel: 'telegram' | 'email') =>
+  api.get<NotificationChannelSettings>(`/notification-settings/${channel}`).then(r => r.data)
+
+export const updateChannelSettings = (
+  channel: 'telegram' | 'email',
+  data: Partial<Omit<NotificationChannelSettings, 'channel' | 'updated_at'>>
+) =>
+  api.put<NotificationChannelSettings>(`/notification-settings/${channel}`, data).then(r => r.data)
+
 // ── CSV export ────────────────────────────────────────────────────────────────
 
 export const exportAlertsCsv = () => {
