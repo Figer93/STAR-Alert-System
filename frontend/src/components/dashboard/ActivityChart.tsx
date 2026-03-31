@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts'
+import {
+  AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer,
+} from 'recharts'
 import { getTimeline } from '../../lib/api'
 import type { TimelineBucket } from '../../types'
 
@@ -12,8 +14,9 @@ const TooltipContent = ({ active, payload, label }: any) => {
   if (!active || !payload?.length) return null
   return (
     <div style={{
-      background: 'var(--bg-raised)', border: '1px solid var(--border)',
-      borderRadius: 4, padding: '6px 10px', fontSize: 11,
+      background: 'var(--bg-elevated)',
+      border: '1px solid var(--border-bright)',
+      borderRadius: 6, padding: '6px 10px', fontSize: 11,
     }}>
       <div style={{ color: 'var(--text-dim)' }}>{label}</div>
       <div style={{ color: 'var(--text-head)', fontWeight: 600 }}>{payload[0].value} alerts</div>
@@ -31,19 +34,38 @@ export default function ActivityChart() {
   }, [])
 
   const displayData = data.map(b => ({ ...b, label: formatHour(b.hour) }))
+  const totalCount  = data.reduce((sum, b) => sum + b.count, 0)
 
   return (
     <div style={{
-      background: 'var(--bg-surface)',
+      background: 'rgba(255,255,255,0.03)',
       border: '1px solid var(--border)',
-      borderRadius: 6,
-      padding: '10px 14px',
+      borderRadius: 'var(--radius-lg)',
+      padding: '12px 14px',
     }}>
-      <div style={{ color: 'var(--text-dim)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 10 }}>
-        Activity — last 24h
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+        <div style={{
+          color: 'var(--text-dim)', fontSize: 10,
+          textTransform: 'uppercase', letterSpacing: '0.10em', fontWeight: 500,
+        }}>
+          Activity — last 24h
+        </div>
+        <span style={{
+          fontSize: 11, fontWeight: 600,
+          color: totalCount > 0 ? 'var(--text-head)' : 'var(--text-dim)',
+        }}>
+          {totalCount} total
+        </span>
       </div>
-      <ResponsiveContainer width="100%" height={80}>
-        <BarChart data={displayData} barSize={6} margin={{ top: 0, right: 0, bottom: 0, left: -30 }}>
+
+      <ResponsiveContainer width="100%" height={96}>
+        <AreaChart data={displayData} margin={{ top: 4, right: 0, bottom: 0, left: -30 }}>
+          <defs>
+            <linearGradient id="activityGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="5%"  stopColor="#3b82f6" stopOpacity={0.3} />
+              <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}   />
+            </linearGradient>
+          </defs>
           <XAxis
             dataKey="label"
             tick={{ fill: 'var(--text-dim)', fontSize: 9 }}
@@ -57,13 +79,17 @@ export default function ActivityChart() {
             axisLine={false}
             allowDecimals={false}
           />
-          <Tooltip content={<TooltipContent />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
-          <Bar dataKey="count" radius={[2, 2, 0, 0]}>
-            {displayData.map((entry, i) => (
-              <Cell key={i} fill={entry.count > 0 ? 'var(--blue)' : 'var(--border)'} />
-            ))}
-          </Bar>
-        </BarChart>
+          <Tooltip content={<TooltipContent />} cursor={{ stroke: 'rgba(255,255,255,0.06)', strokeWidth: 1 }} />
+          <Area
+            type="monotone"
+            dataKey="count"
+            stroke="var(--blue)"
+            strokeWidth={1.5}
+            fill="url(#activityGrad)"
+            dot={false}
+            activeDot={{ r: 3, fill: 'var(--blue)', strokeWidth: 0 }}
+          />
+        </AreaChart>
       </ResponsiveContainer>
     </div>
   )

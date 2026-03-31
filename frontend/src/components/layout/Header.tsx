@@ -26,29 +26,29 @@ export default function Header({ wsConnected }: Props) {
     <>
       <header style={{
         height: 48,
-        background: 'var(--bg-surface)',
-        borderBottom: '1px solid var(--border)',
+        background: 'var(--sidebar)',
+        borderBottom: '1px solid rgba(255,255,255,0.06)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
-        padding: '0 16px',
+        padding: '0 18px',
         flexShrink: 0,
         zIndex: 10,
         position: 'relative',
       }}>
         {/* Brand */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
           <div style={{
-            width: 28, height: 28,
-            background: 'var(--accent-dim)',
-            border: '1px solid rgba(59,130,246,0.25)',
-            borderRadius: 6,
+            width: 26, height: 26,
+            background: 'linear-gradient(135deg, rgba(59,130,246,0.25) 0%, rgba(59,130,246,0.08) 100%)',
+            border: '1px solid rgba(59,130,246,0.3)',
+            borderRadius: 7,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
           }}>
-            <Activity size={15} color="var(--accent)" />
+            <Activity size={14} color="var(--accent)" />
           </div>
           <span style={{
-            fontSize: 13, fontWeight: 700, letterSpacing: '0.08em',
+            fontSize: 12, fontWeight: 700, letterSpacing: '0.1em',
             color: 'var(--text-head)', textTransform: 'uppercase',
           }}>
             ST&amp;R Alerts
@@ -57,7 +57,7 @@ export default function Header({ wsConnected }: Props) {
 
         {/* Desktop nav — centred */}
         <nav style={{
-          display: 'flex', gap: 2,
+          display: 'flex', gap: 1,
           position: 'absolute', left: '50%', transform: 'translateX(-50%)',
         }} className="header-desktop-nav">
           {navItems.map(({ to, label, icon: Icon }) => (
@@ -67,12 +67,12 @@ export default function Header({ wsConnected }: Props) {
               end={to === '/'}
               style={({ isActive }) => ({
                 display: 'flex', alignItems: 'center', gap: 6,
-                padding: '4px 12px',
-                borderRadius: 'var(--radius-sm)',
-                fontSize: 12, fontWeight: 500,
-                color:      isActive ? 'var(--text-head)' : 'var(--text-dim)',
-                background: isActive ? 'var(--bg-raised)' : 'transparent',
-                border:     isActive ? '1px solid var(--border-bright)' : '1px solid transparent',
+                padding: '5px 13px',
+                borderRadius: 6,
+                fontSize: 13, fontWeight: 500, letterSpacing: '0.02em',
+                color:      isActive ? 'var(--text-head)' : 'var(--text-muted)',
+                background: isActive ? 'rgba(255,255,255,0.07)' : 'transparent',
+                border:     isActive ? '1px solid rgba(255,255,255,0.1)' : '1px solid transparent',
                 textDecoration: 'none',
                 transition: 'all 0.15s ease',
               })}
@@ -89,11 +89,17 @@ export default function Header({ wsConnected }: Props) {
             {time}
           </span>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 6,
+            padding: '3px 9px',
+            borderRadius: 20,
+            background: wsConnected ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)',
+            border: `1px solid ${wsConnected ? 'rgba(34,197,94,0.2)' : 'rgba(239,68,68,0.2)'}`,
+          }}>
             {wsConnected ? (
-              <Wifi size={13} color="var(--green)" style={{ filter: 'drop-shadow(0 0 4px var(--green))' }} />
+              <Wifi size={11} color="var(--green)" />
             ) : (
-              <WifiOff size={13} color="var(--red)" />
+              <WifiOff size={11} color="var(--red)" />
             )}
             <span style={{
               fontSize: 11, fontWeight: 600, letterSpacing: '0.06em',
@@ -128,8 +134,8 @@ export default function Header({ wsConnected }: Props) {
             style={{
               position: 'absolute', top: 0, right: 0,
               width: 220, height: '100%',
-              background: 'var(--bg-surface)',
-              borderLeft: '1px solid var(--border)',
+              background: 'var(--sidebar)',
+              borderLeft: '1px solid rgba(255,255,255,0.07)',
               padding: '60px 12px 24px',
               display: 'flex', flexDirection: 'column', gap: 4,
             }}
@@ -146,10 +152,10 @@ export default function Header({ wsConnected }: Props) {
                   padding: '10px 14px',
                   borderRadius: 'var(--radius)',
                   fontSize: 14, fontWeight: 500,
-                  color:      isActive ? 'var(--text-head)' : 'var(--text-dim)',
-                  background: isActive ? 'var(--bg-raised)' : 'transparent',
+                  color:      isActive ? 'var(--text-head)' : 'var(--text-muted)',
+                  background: isActive ? 'rgba(255,255,255,0.07)' : 'transparent',
                   textDecoration: 'none',
-                  transition: 'color 0.15s',
+                  transition: 'all 0.15s ease',
                 })}
               >
                 <Icon size={16} />

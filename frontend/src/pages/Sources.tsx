@@ -9,7 +9,11 @@ import {
   useSortable, arrayMove,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { GripVertical, Plus, Radio, Zap, Loader2, Trash2, ChevronDown, ChevronUp, Copy, BookOpen, Activity, Wifi, Shield, Globe, X, CheckCircle } from 'lucide-react'
+import {
+  GripVertical, Plus, Radio, Zap, Loader2, Trash2,
+  ChevronDown, ChevronUp, Copy, BookOpen, Activity,
+  Wifi, Shield, Globe, X, CheckCircle,
+} from 'lucide-react'
 import { toast } from 'sonner'
 import type { Source } from '../types'
 import { getSources, updateSource, testSource, deleteSource } from '../lib/api'
@@ -23,14 +27,29 @@ function relativeTime(iso: string | null) {
   return new Date(iso).toLocaleString()
 }
 
-const STATUS_COLOUR: Record<string, string> = {
-  online: 'var(--green)', offline: 'var(--red)', unknown: 'var(--text-dim)',
-}
-const STATUS_GLOW: Record<string, string> = {
-  online: '0 0 7px var(--green)', offline: '0 0 7px var(--red)', unknown: 'none',
+function isStale(iso: string | null) {
+  if (!iso) return false
+  return (Date.now() - new Date(iso).getTime()) > 5 * 60 * 1000
 }
 
-// ─── Sortable source card ────────────────────────────────────────────────────
+const STATUS_DOT: Record<string, string> = {
+  online: 'var(--green)', offline: 'var(--red)', unknown: 'var(--text-dim)',
+}
+const STATUS_PILL_BG: Record<string, string> = {
+  online:  'rgba(34,197,94,0.10)',
+  offline: 'rgba(239,68,68,0.10)',
+  unknown: 'rgba(100,116,139,0.08)',
+}
+const STATUS_PILL_BORDER: Record<string, string> = {
+  online:  'rgba(34,197,94,0.25)',
+  offline: 'rgba(239,68,68,0.25)',
+  unknown: 'rgba(100,116,139,0.15)',
+}
+const STATUS_TEXT: Record<string, string> = {
+  online: 'var(--green)', offline: 'var(--red)', unknown: 'var(--text-dim)',
+}
+
+// ─── Sortable source card ─────────────────────────────────────────────────────
 function SourceCard({
   source, testing, testResult, onToggle, onTest, onDelete,
   verifying, verifyCountdown, verifyResult, onVerify, onCancelVerify,
@@ -50,19 +69,24 @@ function SourceCard({
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: source.id })
 
+  const st = source.status ?? 'unknown'
+  const stale = isStale(source.last_seen)
+
   return (
     <motion.div
       ref={setNodeRef}
       layout
+      className="source-card"
       style={{
         transform: CSS.Transform.toString(transform),
         transition,
         opacity: isDragging ? 0.5 : 1,
-        background: 'var(--bg-surface)',
-        border: `1px solid ${isDragging ? 'var(--accent)' : 'var(--border)'}`,
-        borderRadius: 'var(--radius)',
+        background: isDragging ? 'rgba(59,130,246,0.06)' : 'rgba(255,255,255,0.03)',
+        border: `1px solid ${isDragging ? 'rgba(59,130,246,0.4)' : 'var(--border)'}`,
+        borderRadius: 'var(--radius-lg)',
         overflow: 'hidden',
-        boxShadow: isDragging ? 'var(--glow-accent)' : undefined,
+        boxShadow: isDragging ? '0 0 24px rgba(59,130,246,0.2)' : undefined,
+        position: 'relative',
       }}
     >
       <div style={{ display: 'flex', alignItems: 'stretch' }}>
@@ -73,42 +97,73 @@ function SourceCard({
           className="drag-handle"
           style={{
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            width: 36, background: 'var(--bg-raised)',
+            width: 32, background: 'rgba(255,255,255,0.02)',
             borderRight: '1px solid var(--border)',
             cursor: 'grab', flexShrink: 0,
           }}
           title="Drag to reorder"
         >
-          <GripVertical size={15} />
+          <GripVertical size={14} />
         </div>
 
         {/* Card body */}
-        <div style={{ flex: 1, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {/* Header row */}
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ flex: 1, padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+
+          {/* Header row: name + status pill + delete (hover) + toggle */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            {/* Status dot */}
+            <span style={{
+              width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
+              background: STATUS_DOT[st],
+              boxShadow: st === 'online' ? `0 0 6px ${STATUS_DOT[st]}` : 'none',
+            }} />
+
+            {/* Name */}
+            <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-head)', flex: 1 }}>
+              {source.name}
+            </span>
+
+            {/* No data yet badge */}
+            {!source.last_seen && (
               <span style={{
-                width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
-                background: STATUS_COLOUR[source.status],
-                boxShadow: STATUS_GLOW[source.status],
-              }} />
-              <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-head)' }}>{source.name}</span>
-              <span style={{
-                fontSize: 10, fontWeight: 700, letterSpacing: '0.07em',
-                color: STATUS_COLOUR[source.status], textTransform: 'uppercase',
-              }}>
-                {source.status}
-              </span>
-              {!source.last_seen && (
-                <span style={{
-                  fontSize: 9, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase',
-                  color: '#f59e0b', background: 'rgba(245,158,11,0.1)',
-                  border: '1px solid rgba(245,158,11,0.25)',
-                  borderRadius: 4, padding: '1px 5px',
-                  animation: 'pulse-opacity 2s ease-in-out infinite',
-                }}>No data yet</span>
-              )}
-            </div>
+                fontSize: 9, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase',
+                color: 'var(--amber)', background: 'rgba(245,158,11,0.1)',
+                border: '1px solid rgba(245,158,11,0.25)',
+                borderRadius: 4, padding: '2px 6px',
+                animation: 'pulse-opacity 2s ease-in-out infinite',
+              }}>No data yet</span>
+            )}
+
+            {/* Status pill */}
+            <span style={{
+              display: 'inline-flex', alignItems: 'center',
+              padding: '3px 10px', borderRadius: 20,
+              fontSize: 10, fontWeight: 700, letterSpacing: '0.07em',
+              textTransform: 'uppercase',
+              color:      STATUS_TEXT[st],
+              background: STATUS_PILL_BG[st],
+              border:     `1px solid ${STATUS_PILL_BORDER[st]}`,
+            }}>
+              {st}
+            </span>
+
+            {/* Delete — appears on card hover via CSS */}
+            <button
+              className="card-delete"
+              onClick={onDelete}
+              title="Remove source"
+              style={{
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                width: 28, height: 28, borderRadius: 6,
+                background: 'transparent',
+                border: '1px solid rgba(239,68,68,0.2)',
+                color: 'var(--red)', cursor: 'pointer',
+                opacity: 0, transition: 'opacity 0.15s, background 0.15s',
+                flexShrink: 0,
+              }}
+            >
+              <Trash2 size={13} />
+            </button>
 
             {/* Toggle */}
             <label className="toggle" title={source.enabled ? 'Disable adapter' : 'Enable adapter'}>
@@ -117,41 +172,61 @@ function SourceCard({
             </label>
           </div>
 
-          {/* Meta grid */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 16px' }}>
+          {/* Metadata 2×2 grid */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px 20px' }}>
             {([
-              ['Type',     source.type],
-              ['Adapter',  source.adapter],
-              ['Last seen', relativeTime(source.last_seen)],
-              ['Slug',     source.slug],
+              ['Type',      source.type],
+              ['Adapter',   source.adapter],
+              ['Slug',      source.slug],
+              ['Last Seen', relativeTime(source.last_seen)],
             ] as [string, string][]).map(([k, v]) => (
               <div key={k}>
-                <div style={{ color: 'var(--text-dim)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 2 }}>{k}</div>
-                <div style={{ color: 'var(--text-head)', fontSize: 12 }} className="mono">{v}</div>
+                <div style={{
+                  color: 'var(--text-dim)', fontSize: 10,
+                  textTransform: 'uppercase', letterSpacing: '0.08em',
+                  fontWeight: 500, marginBottom: 3,
+                }}>{k}</div>
+                <div
+                  className="mono"
+                  style={{
+                    color: k === 'Last Seen' && stale ? 'var(--red)' : 'var(--text-head)',
+                    fontSize: 12,
+                  }}
+                >
+                  {v}
+                </div>
               </div>
             ))}
           </div>
 
-          {/* Test result */}
+          {/* Test / verify result banners */}
           {testResult && (
             <div style={{
-              fontSize: 11, padding: '5px 10px', borderRadius: 'var(--radius-sm)',
+              fontSize: 11, padding: '6px 12px', borderRadius: 'var(--radius)',
               background: testResult.includes('failed') ? 'var(--red-dim)' : 'var(--green-dim)',
               color:      testResult.includes('failed') ? 'var(--red)'     : 'var(--green)',
-              border:     `1px solid ${testResult.includes('failed') ? 'rgba(255,68,68,0.2)' : 'rgba(34,197,94,0.2)'}`,
+              border:     `1px solid ${testResult.includes('failed') ? 'rgba(239,68,68,0.2)' : 'rgba(34,197,94,0.2)'}`,
             }}>
               {testResult}
             </div>
           )}
-
-          {/* Verify result */}
           {verifyResult === 'success' && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, padding: '5px 10px', borderRadius: 'var(--radius-sm)', background: 'var(--green-dim)', color: 'var(--green)', border: '1px solid rgba(34,197,94,0.2)' }}>
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 6,
+              fontSize: 11, padding: '6px 12px', borderRadius: 'var(--radius)',
+              background: 'var(--green-dim)', color: 'var(--green)',
+              border: '1px solid rgba(34,197,94,0.2)',
+            }}>
               <CheckCircle size={12} /> Webhook received! Connection verified.
             </div>
           )}
           {verifyResult === 'timeout' && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, padding: '5px 10px', borderRadius: 'var(--radius-sm)', background: 'rgba(245,158,11,0.08)', color: '#f59e0b', border: '1px solid rgba(245,158,11,0.25)', flexWrap: 'wrap' }}>
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 6,
+              fontSize: 11, padding: '6px 12px', borderRadius: 'var(--radius)',
+              background: 'rgba(245,158,11,0.08)', color: 'var(--amber)',
+              border: '1px solid rgba(245,158,11,0.25)', flexWrap: 'wrap',
+            }}>
               <span style={{ flex: 1 }}>No webhook received — check your integration settings</span>
               <button className="btn" onClick={onVerify} style={{ padding: '1px 8px', fontSize: 10 }}>Retry</button>
             </div>
@@ -161,40 +236,50 @@ function SourceCard({
           {verifying ? (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <Radio size={13} style={{ animation: 'pulse-opacity 1s ease-in-out infinite', color: 'var(--accent)', flexShrink: 0 }} />
-              <span style={{ fontSize: 11, color: 'var(--text-muted)', flex: 1 }}>Listening for webhook… {verifyCountdown}s</span>
+              <span style={{ fontSize: 11, color: 'var(--text-muted)', flex: 1 }}>
+                Listening for webhook… {verifyCountdown}s
+              </span>
               <button className="btn" onClick={onCancelVerify} title="Cancel" style={{ padding: '0 8px' }}>
                 <X size={12} />
               </button>
             </div>
           ) : (
             <div style={{ display: 'flex', gap: 8 }}>
+              {/* Send Test — full-width ghost → blue on hover */}
               <button
-                className="btn"
+                className="btn-test"
                 onClick={onTest}
                 disabled={testing}
-                style={{ gap: 6, flex: 1, justifyContent: 'center' }}
+                style={{
+                  flex: 1,
+                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                  padding: '7px 0',
+                  borderRadius: 'var(--radius)',
+                  background: 'transparent',
+                  border: '1px solid rgba(255,255,255,0.12)',
+                  color: 'var(--text-muted)',
+                  fontSize: 12, fontWeight: 500,
+                  cursor: testing ? 'wait' : 'pointer',
+                  transition: 'background 0.2s, border-color 0.2s, color 0.2s',
+                }}
               >
-                {testing ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <Zap size={12} />}
+                {testing
+                  ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} />
+                  : <Zap size={13} />}
                 {testing ? 'Testing…' : 'Send Test'}
               </button>
+
+              {/* Verify (if no data yet) */}
               {!source.last_seen && (
                 <button
                   className="btn"
                   onClick={onVerify}
                   title="Listen for a real incoming webhook"
-                  style={{ gap: 5, padding: '0 10px', color: 'var(--accent)' }}
+                  style={{ gap: 5, padding: '0 12px', color: 'var(--accent)', fontSize: 12 }}
                 >
                   <Radio size={12} /> Verify
                 </button>
               )}
-              <button
-                className="btn"
-                onClick={onDelete}
-                title="Remove source"
-                style={{ padding: '0 10px', color: 'var(--red)' }}
-              >
-                <Trash2 size={13} />
-              </button>
             </div>
           )}
         </div>
@@ -203,25 +288,25 @@ function SourceCard({
   )
 }
 
-// ─── Adapter info row (setup guide) ─────────────────────────────────────────
+// ─── Adapter info row ─────────────────────────────────────────────────────────
 function AdapterInfoRow({ icon, name, note, url }: { icon: React.ReactNode; name: string; note: string; url: string }) {
   const copy = () => {
     navigator.clipboard.writeText(url)
     toast.success('Copied to clipboard')
   }
   return (
-    <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', background: 'var(--accent-dim)', border: '1px solid rgba(59,130,246,0.2)', borderRadius: 'var(--radius-sm)', padding: '9px 12px', fontSize: 11, color: 'var(--text-muted)' }}>
+    <div style={{
+      display: 'flex', gap: 10, alignItems: 'flex-start',
+      background: 'var(--accent-dim)', border: '1px solid rgba(59,130,246,0.2)',
+      borderRadius: 'var(--radius)', padding: '10px 14px',
+      fontSize: 11, color: 'var(--text-muted)',
+    }}>
       <span style={{ flexShrink: 0, marginTop: 1, color: 'var(--accent)' }}>{icon}</span>
       <div style={{ flex: 1, minWidth: 0 }}>
         <strong style={{ color: 'var(--text-head)' }}>{name}</strong> — {note}
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 5 }}>
           <span className="mono" style={{ color: 'var(--accent)', fontSize: 11, wordBreak: 'break-all' }}>{url}</span>
-          <button
-            className="btn"
-            onClick={copy}
-            title="Copy URL"
-            style={{ padding: '2px 6px', flexShrink: 0 }}
-          >
+          <button className="btn" onClick={copy} title="Copy URL" style={{ padding: '2px 6px', flexShrink: 0 }}>
             <Copy size={11} />
           </button>
         </div>
@@ -230,7 +315,7 @@ function AdapterInfoRow({ icon, name, note, url }: { icon: React.ReactNode; name
   )
 }
 
-// ─── Main page ───────────────────────────────────────────────────────────────
+// ─── Main page ────────────────────────────────────────────────────────────────
 export default function Sources() {
   const [sources, setSources]       = useState<Source[]>([])
   const [loading, setLoading]       = useState(true)
@@ -326,19 +411,38 @@ export default function Sources() {
 
   return (
     <div style={{ padding: 16, height: '100%', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 14 }}>
+
       {/* Page header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <Radio size={16} color="var(--accent)" />
-          <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-head)' }}>Sources</span>
+          <Radio size={15} color="var(--accent)" />
+          <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-head)' }}>Sources</span>
           <span style={{
-            background: 'var(--bg-raised)', border: '1px solid var(--border-bright)',
-            borderRadius: 10, padding: '1px 7px', fontSize: 11, color: 'var(--text-dim)',
+            background: 'rgba(255,255,255,0.06)', border: '1px solid var(--border-bright)',
+            borderRadius: 10, padding: '1px 8px', fontSize: 11, fontWeight: 700,
+            color: 'var(--text-head)',
           }}>
             {sources.filter(s => s.enabled).length} active
           </span>
         </div>
-        <button className="btn btn-primary" onClick={() => setShowWizard(true)} style={{ gap: 7 }}>
+
+        {/* Add Adapter — filled gradient button */}
+        <button
+          onClick={() => setShowWizard(true)}
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6,
+            padding: '7px 16px',
+            borderRadius: 8,
+            background: 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
+            border: '1px solid rgba(59,130,246,0.4)',
+            color: '#fff', fontSize: 13, fontWeight: 600,
+            cursor: 'pointer',
+            boxShadow: '0 4px 12px rgba(59,130,246,0.25)',
+            transition: 'box-shadow 0.2s, opacity 0.2s',
+          }}
+          onMouseEnter={e => (e.currentTarget.style.boxShadow = '0 6px 20px rgba(59,130,246,0.4)')}
+          onMouseLeave={e => (e.currentTarget.style.boxShadow = '0 4px 12px rgba(59,130,246,0.25)')}
+        >
           <Plus size={14} /> Add Adapter
         </button>
       </div>
@@ -356,46 +460,61 @@ export default function Sources() {
         </button>
         {showGuide && (
           <div className="card" style={{ marginTop: 8, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {/* NinjaRMM */}
             <AdapterInfoRow
               icon={<Activity size={13} />}
               name="NinjaRMM"
               note="In NinjaRMM → Administration → Webhooks, add a new webhook and paste this URL:"
               url={`${window.location.origin}/api/ingest/ninjarmm`}
             />
-            {/* PingPlotter */}
             <AdapterInfoRow
               icon={<Wifi size={13} />}
               name="PingPlotter"
               note="In PingPlotter → Alerts → Alert Notifications, set the webhook URL to:"
               url={`${window.location.origin}/api/ingest/pingplotter`}
             />
-            {/* pfSense */}
-            <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', background: 'rgba(245,158,11,0.07)', border: '1px solid rgba(245,158,11,0.25)', borderRadius: 'var(--radius-sm)', padding: '9px 12px', fontSize: 11, color: 'var(--text-muted)' }}>
-              <Shield size={13} style={{ flexShrink: 0, marginTop: 1, color: '#f59e0b' }} />
-              <span><strong style={{ color: 'var(--text-head)' }}>pfSense</strong> — In Status → System Logs → Settings, set Remote Log Server to <span className="mono" style={{ color: 'var(--accent)' }}>your-server-ip:514</span> (UDP). <span style={{ color: '#f59e0b' }}>Note: Railway cannot receive UDP — self-hosted deployment required for pfSense.</span></span>
+            <div style={{
+              display: 'flex', gap: 10, alignItems: 'flex-start',
+              background: 'rgba(245,158,11,0.07)', border: '1px solid rgba(245,158,11,0.25)',
+              borderRadius: 'var(--radius)', padding: '10px 14px',
+              fontSize: 11, color: 'var(--text-muted)',
+            }}>
+              <Shield size={13} style={{ flexShrink: 0, marginTop: 1, color: 'var(--amber)' }} />
+              <span>
+                <strong style={{ color: 'var(--text-head)' }}>pfSense</strong> — In Status → System Logs → Settings, set Remote Log Server to{' '}
+                <span className="mono" style={{ color: 'var(--accent)' }}>your-server-ip:514</span> (UDP).{' '}
+                <span style={{ color: 'var(--amber)' }}>Note: Railway cannot receive UDP — self-hosted deployment required for pfSense.</span>
+              </span>
             </div>
-            {/* Custom */}
-            <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', background: 'var(--accent-dim)', border: '1px solid rgba(59,130,246,0.2)', borderRadius: 'var(--radius-sm)', padding: '9px 12px', fontSize: 11, color: 'var(--text-muted)' }}>
+            <div style={{
+              display: 'flex', gap: 10, alignItems: 'flex-start',
+              background: 'var(--accent-dim)', border: '1px solid rgba(59,130,246,0.2)',
+              borderRadius: 'var(--radius)', padding: '10px 14px',
+              fontSize: 11, color: 'var(--text-muted)',
+            }}>
               <Globe size={13} style={{ flexShrink: 0, marginTop: 1, color: 'var(--accent)' }} />
-              <span><strong style={{ color: 'var(--text-head)' }}>Custom Webhook</strong> — After adding a custom adapter, your endpoint will be: <span className="mono" style={{ color: 'var(--accent)' }}>{window.location.origin}/api/ingest/<span style={{ opacity: 0.6 }}>{'{your-slug}'}</span></span></span>
+              <span>
+                <strong style={{ color: 'var(--text-head)' }}>Custom Webhook</strong> — After adding a custom adapter, your endpoint will be:{' '}
+                <span className="mono" style={{ color: 'var(--accent)' }}>
+                  {window.location.origin}/api/ingest/<span style={{ opacity: 0.6 }}>{'{your-slug}'}</span>
+                </span>
+              </span>
             </div>
           </div>
         )}
       </div>
 
-      {/* Hint */}
+      {/* Drag hint */}
       {!loading && sources.length > 1 && (
         <div style={{ fontSize: 11, color: 'var(--text-dim)', display: 'flex', alignItems: 'center', gap: 6 }}>
           <GripVertical size={12} /> Drag adapters to reorder
         </div>
       )}
 
-      {/* Loading */}
+      {/* Loading skeletons */}
       {loading && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {Array.from({ length: 3 }).map((_, i) => (
-            <div key={i} className="skeleton" style={{ height: 130, borderRadius: 'var(--radius)' }} />
+            <div key={i} className="skeleton" style={{ height: 160, borderRadius: 'var(--radius-lg)' }} />
           ))}
         </div>
       )}
@@ -404,7 +523,7 @@ export default function Sources() {
       {!loading && (
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
           <SortableContext items={sources.map(s => s.id)} strategy={verticalListSortingStrategy}>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               {sources.map(s => (
                 <SourceCard
                   key={s.id}
@@ -428,21 +547,45 @@ export default function Sources() {
 
       {/* Empty state */}
       {!loading && sources.length === 0 && (
-        <div className="card" style={{ padding: '36px 24px', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14 }}>
-          <Radio size={28} color="var(--text-dim)" />
+        <div className="card" style={{ padding: '48px 24px', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16 }}>
+          <Radio size={32} color="var(--text-dim)" />
           <div>
-            <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-head)', marginBottom: 4 }}>No adapters connected yet</div>
-            <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>Follow these steps to start receiving alerts:</div>
+            <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-head)', marginBottom: 5 }}>
+              No adapters connected yet
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>
+              Follow these steps to start receiving alerts:
+            </div>
           </div>
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center' }}>
             {(['Click Add Adapter', 'Choose your integration', 'Configure & test'] as const).map((label, i) => (
-              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 7, background: 'var(--bg-raised)', border: '1px solid var(--border-bright)', borderRadius: 'var(--radius)', padding: '7px 12px', fontSize: 12, color: 'var(--text-muted)' }}>
-                <span style={{ width: 18, height: 18, borderRadius: '50%', background: 'var(--accent)', color: '#fff', fontSize: 10, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>{i + 1}</span>
+              <div key={i} style={{
+                display: 'flex', alignItems: 'center', gap: 7,
+                background: 'rgba(255,255,255,0.04)', border: '1px solid var(--border-bright)',
+                borderRadius: 'var(--radius)', padding: '8px 14px',
+                fontSize: 12, color: 'var(--text-muted)',
+              }}>
+                <span style={{
+                  width: 18, height: 18, borderRadius: '50%',
+                  background: 'var(--accent)', color: '#fff',
+                  fontSize: 10, fontWeight: 700,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                }}>{i + 1}</span>
                 {label}
               </div>
             ))}
           </div>
-          <button className="btn btn-primary" onClick={() => setShowWizard(true)} style={{ gap: 7, marginTop: 2 }}>
+          <button
+            onClick={() => setShowWizard(true)}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 6,
+              padding: '8px 20px', borderRadius: 8,
+              background: 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
+              border: '1px solid rgba(59,130,246,0.4)',
+              color: '#fff', fontSize: 13, fontWeight: 600,
+              cursor: 'pointer', boxShadow: '0 4px 12px rgba(59,130,246,0.25)',
+            }}
+          >
             <Plus size={14} /> Add Adapter
           </button>
         </div>
@@ -458,6 +601,12 @@ export default function Sources() {
       <style>{`
         @keyframes spin { to { transform: rotate(360deg); } }
         @keyframes pulse-opacity { 0%,100%{opacity:1} 50%{opacity:0.4} }
+        .source-card:hover .card-delete { opacity: 1 !important; }
+        .btn-test:hover:not(:disabled) {
+          background: rgba(59,130,246,0.15) !important;
+          border-color: rgba(59,130,246,0.4) !important;
+          color: var(--accent) !important;
+        }
       `}</style>
     </div>
   )

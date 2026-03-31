@@ -26,7 +26,7 @@ export default function Dashboard() {
           Array.from({ length: 5 }).map((_, i) => <MetricCardSkeleton key={i} />)
         ) : (
           <>
-            <MetricCard label="Critical"       value={stats?.critical ?? 0}     colour="var(--red)"   glow="var(--glow-red)"   icon={AlertCircle} />
+            <MetricCard label="Critical"       value={stats?.critical ?? 0}     colour="var(--red)"   glow="var(--glow-red)"   icon={AlertCircle}  pulse={!!stats?.critical && stats.critical > 0} />
             <MetricCard label="Warning"        value={stats?.warning ?? 0}      colour="var(--amber)" glow="var(--glow-amber)" icon={AlertTriangle} />
             <MetricCard label="Info"           value={stats?.info ?? 0}         colour="var(--blue)"  glow="var(--glow-blue)"  icon={Info} />
             <MetricCard label="Sources Online" value={stats ? `${stats.sources_online}/${stats.sources_total}` : '—'} colour="var(--green)" glow="var(--glow-green)" icon={Server} />

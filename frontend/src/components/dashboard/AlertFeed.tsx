@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useRef } from 'react'
-import { AnimatePresence } from 'framer-motion'
+import { AnimatePresence, motion } from 'framer-motion'
 import { BellOff, Zap } from 'lucide-react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import type { Alert, Source } from '../../types'
@@ -18,7 +18,9 @@ interface Props {
 export default function AlertFeed({ alerts, sources, onAcknowledge, loading }: Props) {
   const [filters, setFilters] = useState<Filters>({ severity: '', source: '', status: '' })
   const [detail, setDetail]   = useState<Alert | null>(null)
+  const [badgePulse, setBadgePulse] = useState(false)
   const parentRef             = useRef<HTMLDivElement>(null)
+  const prevCount             = useRef(alerts.length)
 
   const filtered = useMemo(() => {
     return alerts.filter(a => {
@@ -29,15 +31,25 @@ export default function AlertFeed({ alerts, sources, onAcknowledge, loading }: P
     })
   }, [alerts, filters])
 
-  // Virtualise when list > 50 rows to keep DOM lean
+  // Pulse badge briefly when new alerts arrive
+  useEffect(() => {
+    if (alerts.length > prevCount.current) {
+      setBadgePulse(true)
+      const t = setTimeout(() => setBadgePulse(false), 1200)
+      return () => clearTimeout(t)
+    }
+    prevCount.current = alerts.length
+  }, [alerts.length])
+
+  // Virtualise when list > 50 rows
   const virtualizer = useVirtualizer({
-    count:         filtered.length,
+    count:            filtered.length,
     getScrollElement: () => parentRef.current,
-    estimateSize:  () => 80,
-    overscan:      8,
+    estimateSize:     () => 88,
+    overscan:         8,
   })
 
-  // Keyboard shortcut: Esc closes detail panel
+  // Esc closes detail panel
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setDetail(null)
@@ -54,27 +66,39 @@ export default function AlertFeed({ alerts, sources, onAcknowledge, loading }: P
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <Zap size={13} color="var(--accent)" />
-          <span style={{ color: 'var(--text-dim)', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.07em' }}>
+          <span style={{
+            color: 'var(--text-dim)', fontSize: 11,
+            textTransform: 'uppercase', letterSpacing: '0.10em', fontWeight: 500,
+          }}>
             Live Feed
           </span>
-          <span style={{
-            background: 'var(--bg-raised)',
-            border: '1px solid var(--border-bright)',
-            borderRadius: 10, padding: '1px 7px',
-            fontSize: 11, fontWeight: 600, color: 'var(--text-head)',
-          }}>
+          <motion.span
+            animate={badgePulse
+              ? { scale: [1, 1.2, 1], background: ['rgba(59,130,246,0.25)', 'rgba(59,130,246,0.5)', 'rgba(59,130,246,0.25)'] }
+              : { scale: 1 }}
+            transition={{ duration: 0.5 }}
+            style={{
+              display: 'inline-flex', alignItems: 'center',
+              background: 'rgba(255,255,255,0.06)',
+              border: '1px solid var(--border-bright)',
+              borderRadius: 10, padding: '1px 8px',
+              fontSize: 11, fontWeight: 700, color: 'var(--text-head)',
+            }}
+          >
             {filtered.length}
-          </span>
+          </motion.span>
         </div>
         <AlertFilters filters={filters} sources={sources} onChange={setFilters} />
       </div>
 
-      {/* Feed — parentRef must always be mounted so virtualizer has a scroll container */}
+      {/* Feed */}
       <div ref={parentRef} style={{ overflow: 'auto', flex: 1 }}>
         {filtered.length === 0 ? (
           <div style={{
-            background: 'var(--bg-surface)', border: '1px solid var(--border)',
-            borderRadius: 'var(--radius)', padding: '32px 24px', textAlign: 'center',
+            background: 'rgba(255,255,255,0.02)',
+            border: '1px solid var(--border)',
+            borderRadius: 'var(--radius-lg)',
+            padding: '40px 24px', textAlign: 'center',
             display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10,
           }}>
             <BellOff size={28} color="var(--text-dim)" />

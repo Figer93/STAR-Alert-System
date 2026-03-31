@@ -15,20 +15,35 @@ import { notificationService, type NotifPrefs } from '../lib/notifications'
 // ── Styles ────────────────────────────────────────────────────────────────────
 
 const inputStyle: React.CSSProperties = {
-  background: 'var(--bg-raised)', border: '1px solid var(--border)',
-  borderRadius: 4, color: 'var(--text)', fontSize: 12,
-  padding: '5px 10px', outline: 'none', width: '100%',
+  background: 'rgba(255,255,255,0.04)',
+  border: '1px solid rgba(255,255,255,0.10)',
+  borderRadius: 6, color: 'var(--text-head)', fontSize: 12,
+  padding: '6px 10px', outline: 'none', width: '100%',
+  transition: 'border-color 0.15s',
 }
 const selectStyle: React.CSSProperties = { ...inputStyle, cursor: 'pointer' }
 const labelStyle: React.CSSProperties = {
   color: 'var(--text-dim)', fontSize: 10, textTransform: 'uppercase',
-  letterSpacing: '0.06em', marginBottom: 3, display: 'block',
+  letterSpacing: '0.08em', marginBottom: 4, display: 'block', fontWeight: 500,
 }
 const sectionLabel = (title: string, icon?: React.ReactNode) => (
-  <div style={{ display: 'flex', alignItems: 'center', gap: 7, color: 'var(--text-dim)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 10, marginTop: 4 }}>
+  <div style={{
+    display: 'flex', alignItems: 'center', gap: 7,
+    color: 'var(--text-dim)', fontSize: 11, textTransform: 'uppercase',
+    letterSpacing: '0.10em', marginBottom: 12, marginTop: 4,
+    fontWeight: 500,
+  }}>
     {icon}{title}
   </div>
 )
+
+const cardSection: React.CSSProperties = {
+  background: 'rgba(255,255,255,0.03)',
+  border: '1px solid var(--border)',
+  borderRadius: 'var(--radius-lg)',
+  padding: 16,
+  display: 'flex', flexDirection: 'column', gap: 12,
+}
 
 // ── Severity filter helpers ───────────────────────────────────────────────────
 
@@ -85,10 +100,14 @@ function RulesPanel({ rules, loading, onEdit, onDelete }: RulesPanelProps) {
 
   if (rules.length === 0) return (
     <div style={{
-      background: 'var(--bg-surface)', border: '1px solid var(--border)',
-      borderRadius: 6, padding: 24, textAlign: 'center', color: 'var(--text-dim)', fontSize: 13,
+      background: 'rgba(255,255,255,0.02)', border: '1px solid var(--border)',
+      borderRadius: 'var(--radius-lg)', padding: '36px 24px',
+      textAlign: 'center', color: 'var(--text-dim)', fontSize: 13,
+      display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8,
     }}>
-      No rules defined. Create one to control alert routing and suppression.
+      <ShieldCheck size={28} color="var(--text-dim)" />
+      <div>No rules defined.</div>
+      <div style={{ fontSize: 11 }}>Create one on the left to control alert routing and suppression.</div>
     </div>
   )
 
@@ -98,10 +117,11 @@ function RulesPanel({ rules, loading, onEdit, onDelete }: RulesPanelProps) {
         <div
           key={r.id}
           style={{
-            background: 'var(--bg-surface)', border: '1px solid var(--border)',
-            borderRadius: 6, padding: '10px 14px', marginBottom: 8,
+            background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border)',
+            borderRadius: 'var(--radius-lg)', padding: '12px 16px', marginBottom: 6,
             display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12,
-            opacity: r.enabled ? 1 : 0.5,
+            opacity: r.enabled ? 1 : 0.45,
+            transition: 'background 0.15s',
           }}
         >
           <div style={{ flex: 1, minWidth: 0 }}>
@@ -166,7 +186,7 @@ function ChannelSettingsPanel({ channel, settings: s, onChange, onSave, saving }
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
 
       {/* Enable + Send resolutions */}
-      <div style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 6, padding: 14, display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={cardSection}>
         {sectionLabel('Channel')}
 
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -192,7 +212,7 @@ function ChannelSettingsPanel({ channel, settings: s, onChange, onSave, saving }
       </div>
 
       {/* Severity filter */}
-      <div style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 6, padding: 14 }}>
+      <div style={{ ...cardSection, gap: 10 }}>
         {sectionLabel('Severity Filter')}
         <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 10 }}>
           Only send notifications for the selected severity levels.
@@ -225,7 +245,7 @@ function ChannelSettingsPanel({ channel, settings: s, onChange, onSave, saving }
       </div>
 
       {/* Field inclusion */}
-      <div style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 6, padding: 14 }}>
+      <div style={{ ...cardSection, gap: 10 }}>
         {sectionLabel('Include in Message')}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {[
@@ -253,7 +273,7 @@ function ChannelSettingsPanel({ channel, settings: s, onChange, onSave, saving }
       </div>
 
       {/* Message template */}
-      <div style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 6, padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div style={{ ...cardSection, gap: 10 }}>
         {sectionLabel('Message Template')}
 
         {/* Email subject */}
@@ -312,12 +332,13 @@ function ChannelSettingsPanel({ channel, settings: s, onChange, onSave, saving }
         )}
 
         {/* Placeholder reference */}
-        <div style={{ border: '1px solid var(--border)', borderRadius: 4, overflow: 'hidden' }}>
+        <div style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
           <button
             type="button"
             onClick={() => setPlaceholderOpen(o => !o)}
             style={{
-              width: '100%', padding: '7px 10px', background: 'var(--bg-raised)',
+              width: '100%', padding: '8px 12px',
+              background: 'rgba(255,255,255,0.03)',
               border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center',
               justifyContent: 'space-between', fontSize: 11, color: 'var(--text-dim)',
             }}
@@ -340,7 +361,7 @@ function ChannelSettingsPanel({ channel, settings: s, onChange, onSave, saving }
 
       {/* Channel-specific */}
       {channel === 'telegram' && (
-        <div style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 6, padding: 14 }}>
+        <div style={{ ...cardSection, gap: 10 }}>
           {sectionLabel('Telegram Options')}
           <div>
             <label style={labelStyle}>Parse mode</label>
@@ -600,11 +621,11 @@ export default function Settings() {
 
       {/* ─ Left sidebar: Rule builder + Browser notifs + Maintenance ─ */}
       <div className="settings-sidebar" style={{ width: 340, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 10, overflowY: 'auto' }}>
-        <span style={{ color: 'var(--text-head)', fontWeight: 600, fontSize: 14 }}>
+        <span style={{ color: 'var(--text-head)', fontWeight: 600, fontSize: 13, letterSpacing: '0.01em' }}>
           {editId !== null ? 'Edit Rule' : 'New Rule'}
         </span>
 
-        <div style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 6, padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={cardSection}>
           <div>
             <label style={labelStyle}>Rule Name</label>
             <input style={inputStyle} value={form.name} onChange={set('name')} placeholder="e.g. Suppress FW blocks" />
@@ -710,9 +731,9 @@ export default function Settings() {
         </div>
 
         {/* ─ Browser Notifications ─ */}
-        <div style={{ borderTop: '1px solid var(--border)', paddingTop: 14 }}>
+        <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 14 }}>
           {sectionLabel('Browser & Sound', <Bell size={11} />)}
-          <div className="card" style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={cardSection}>
 
             {browserPerm !== 'granted' && (
               <div style={{ background: 'var(--amber-dim)', border: '1px solid rgba(245,158,11,0.25)', borderRadius: 'var(--radius-sm)', padding: '8px 10px', fontSize: 11, color: 'var(--amber)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
@@ -772,9 +793,9 @@ export default function Settings() {
         </div>
 
         {/* ─ Maintenance Mode ─ */}
-        <div style={{ borderTop: '1px solid var(--border)', paddingTop: 14 }}>
+        <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 14 }}>
           {sectionLabel('Maintenance Mode', maintenance.active ? <ShieldOff size={11} color="var(--amber)" /> : <ShieldCheck size={11} />)}
-          <div className="card" style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ ...cardSection, gap: 10 }}>
             {maintenance.active ? (
               <div style={{ background: 'var(--amber-dim)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 'var(--radius-sm)', padding: '8px 10px', fontSize: 11, color: 'var(--amber)' }}>
                 <div style={{ fontWeight: 600, marginBottom: 2 }}>Notifications suppressed</div>
@@ -811,8 +832,14 @@ export default function Settings() {
       {/* ─ Right panel: tabbed Rules / Telegram / Email ─ */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
-        {/* Tab bar */}
-        <div style={{ display: 'flex', borderBottom: '1px solid var(--border)', marginBottom: 12, flexShrink: 0 }}>
+        {/* Tab bar — pill style */}
+        <div style={{
+          display: 'flex', gap: 4, marginBottom: 14, flexShrink: 0,
+          background: 'rgba(255,255,255,0.03)',
+          border: '1px solid var(--border)',
+          borderRadius: 8, padding: 4,
+          width: 'fit-content',
+        }}>
           {([
             { id: 'rules' as RightTab,    label: `Rules (${rules.length})` },
             { id: 'telegram' as RightTab, label: 'Telegram' },
@@ -822,12 +849,13 @@ export default function Settings() {
               key={tab.id}
               onClick={() => setRightTab(tab.id)}
               style={{
-                padding: '7px 18px', fontSize: 12, cursor: 'pointer',
-                background: 'none', border: 'none',
-                borderBottom: rightTab === tab.id ? '2px solid var(--accent)' : '2px solid transparent',
+                padding: '5px 16px', fontSize: 12, cursor: 'pointer',
+                background: rightTab === tab.id ? 'rgba(255,255,255,0.09)' : 'transparent',
+                border: rightTab === tab.id ? '1px solid rgba(255,255,255,0.12)' : '1px solid transparent',
+                borderRadius: 6,
                 color: rightTab === tab.id ? 'var(--text-head)' : 'var(--text-dim)',
                 fontWeight: rightTab === tab.id ? 600 : 400,
-                transition: 'color 0.15s, border-color 0.15s',
+                transition: 'all 0.15s',
               }}
             >
               {tab.label}
