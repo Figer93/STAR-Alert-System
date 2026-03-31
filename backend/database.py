@@ -37,8 +37,9 @@ async def get_db() -> AsyncSession:
 
 async def init_db():
     from backend import models  # noqa: F401 — ensure models are registered
-    if not _is_postgres:
-        # SQLite local dev: create tables directly
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-    # PostgreSQL: Alembic runs "alembic upgrade head" before uvicorn starts
+    # create_all is idempotent (skips existing tables), so it is safe to run on
+    # both SQLite and PostgreSQL.  On PostgreSQL, alembic upgrade head in the
+    # start command handles schema migrations, but create_all ensures all tables
+    # exist even if migrations haven't been applied yet (e.g. first deploy).
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
