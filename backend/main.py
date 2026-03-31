@@ -140,10 +140,20 @@ async def lifespan(app: FastAPI):
     broadcast_task = asyncio.create_task(_stats_broadcaster())
     offline_task   = asyncio.create_task(_source_offline_checker())
 
+    # UniFi polling loop (no-op if no UniFi sources are configured)
+    try:
+        from backend.unifi_poller import unifi_polling_loop
+        unifi_task = asyncio.create_task(unifi_polling_loop())
+    except Exception:
+        logger.exception("Failed to start UniFi polling loop")
+        unifi_task = None
+
     yield
 
     broadcast_task.cancel()
     offline_task.cancel()
+    if unifi_task:
+        unifi_task.cancel()
     if syslog_transport:
         syslog_transport.close()
         logger.info("Syslog listener closed")

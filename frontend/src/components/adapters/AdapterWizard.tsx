@@ -1,12 +1,12 @@
 import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { X, ChevronRight, ChevronLeft, CheckCircle, Loader2, AlertTriangle, Wifi, Shield, Activity, Globe } from 'lucide-react'
+import { X, ChevronRight, ChevronLeft, CheckCircle, Loader2, AlertTriangle, Wifi, Shield, Activity, Globe, Router } from 'lucide-react'
 import { toast } from 'sonner'
 import { createSource, testSource } from '../../lib/api'
 
 interface Props { onClose: () => void; onComplete: () => void }
 
-type AdapterType = 'pfsense' | 'ninjarmm' | 'pingplotter' | 'custom'
+type AdapterType = 'pfsense' | 'ninjarmm' | 'pingplotter' | 'unifi' | 'custom'
 
 interface AdapterDef {
   id:       AdapterType
@@ -36,6 +36,16 @@ const ADAPTERS: AdapterDef[] = [
       { key: 'webhook_secret', label: 'Webhook Secret (optional)', type: 'password', placeholder: 'Leave blank to skip validation' },
       { key: 'loss_threshold', label: 'Packet Loss Threshold (%)', type: 'number', placeholder: '1', default: '1' },
       { key: 'latency_threshold', label: 'Latency Threshold (ms)', type: 'number', placeholder: '100', default: '100' },
+    ],
+  },
+  {
+    id: 'unifi', name: 'UniFi Network', icon: <Router size={22} />, desc: 'Polls UniFi Controller API — device offline/online, alarms, events, IDS/IPS, WAN failover',
+    fields: [
+      { key: 'controller_url', label: 'Controller URL', type: 'text', placeholder: 'https://192.168.1.1:8443' },
+      { key: 'username', label: 'Username (view-only account)', type: 'text', placeholder: 'readonly' },
+      { key: 'password', label: 'Password', type: 'password', placeholder: '••••••••' },
+      { key: 'site', label: 'Site Name', type: 'text', placeholder: 'default', default: 'default' },
+      { key: 'poll_interval', label: 'Poll Interval (seconds)', type: 'number', placeholder: '60', default: '60' },
     ],
   },
   {
@@ -79,7 +89,7 @@ export default function AdapterWizard({ onClose, onComplete }: Props) {
         const isCustom = selected === 'custom'
         const slug = isCustom ? config['slug'] : selected!
         const name = isCustom ? (config['display_name'] || config['slug']) : adapter!.name
-        const sourceType = selected === 'pfsense' ? 'syslog' : 'webhook'
+        const sourceType = selected === 'pfsense' ? 'syslog' : selected === 'unifi' ? 'poll' : 'webhook'
         const created = await createSource({
           name,
           slug,
@@ -230,6 +240,16 @@ export default function AdapterWizard({ onClose, onComplete }: Props) {
                   {adapter.id === 'pingplotter' && (
                     <div style={{ background: 'var(--accent-dim)', border: '1px solid rgba(59,130,246,0.2)', borderRadius: 'var(--radius-sm)', padding: '10px 12px', fontSize: 11, color: 'var(--text-muted)' }}>
                       Configure PingPlotter webhook URL to: <span className="mono" style={{ color: 'var(--accent)' }}>{window.location.origin}/api/ingest/pingplotter</span>
+                    </div>
+                  )}
+                  {adapter.id === 'unifi' && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      <div style={{ background: 'var(--accent-dim)', border: '1px solid rgba(59,130,246,0.2)', borderRadius: 'var(--radius-sm)', padding: '10px 12px', fontSize: 11, color: 'var(--text-muted)' }}>
+                        <strong style={{ color: 'var(--text-head)' }}>View-only account recommended.</strong> Create a read-only admin in your UniFi Controller under Settings → Admins. This adapter polls the API — no webhook configuration needed on the controller.
+                      </div>
+                      <div style={{ background: 'var(--accent-dim)', border: '1px solid rgba(59,130,246,0.2)', borderRadius: 'var(--radius-sm)', padding: '10px 12px', fontSize: 11, color: 'var(--text-muted)' }}>
+                        <strong style={{ color: 'var(--text-head)' }}>UDM / Dream Machine?</strong> If you&apos;re using a UniFi OS device (UDM, UDM-Pro, Dream Router), you can enable the &ldquo;UniFi OS&rdquo; toggle by editing the source config after creation — set <span className="mono">is_unifios</span> to <span className="mono">true</span>. SSL verification is disabled by default for self-signed certs.
+                      </div>
                     </div>
                   )}
                 </div>
