@@ -4,6 +4,7 @@ import {
   Activity, LayoutDashboard, History, Radio, Settings,
   Menu, X, Wifi, WifiOff,
   Globe, Plug, TrendingUp, Search, ChevronDown, Monitor,
+  AlertTriangle, SlidersHorizontal,
 } from 'lucide-react'
 
 interface Props { wsConnected: boolean }
@@ -22,6 +23,8 @@ const networkSubItems = [
   { to: '/network/traffic',     label: 'Traffic',     icon: TrendingUp },
   { to: '/network/investigate', label: 'Investigate', icon: Search },
   { to: '/network/devices',     label: 'Devices',     icon: Monitor },
+  { to: '/network/incidents',   label: 'Incidents',   icon: AlertTriangle },
+  { to: '/network/settings',    label: 'Settings',    icon: SlidersHorizontal },
 ]
 
 export default function Header({ wsConnected }: Props) {

@@ -157,3 +157,34 @@ CREATE TABLE collector_heartbeat (
     version      TEXT,
     sources      JSONB
 );
+
+-- ----------------------------------------------------------------------------
+-- network_settings  (alert thresholds, business hours)
+-- ----------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS network_settings (
+    key        TEXT        PRIMARY KEY,
+    value      TEXT        NOT NULL,
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+INSERT INTO network_settings (key, value) VALUES
+    ('wan_packet_loss_threshold_pct', '5'),
+    ('internal_latency_threshold_ms', '50'),
+    ('port_error_threshold',          '50'),
+    ('traffic_anomaly_multiplier',    '5'),
+    ('business_hours_start',          '08:00'),
+    ('business_hours_end',            '18:00')
+ON CONFLICT (key) DO NOTHING;
+
+-- ----------------------------------------------------------------------------
+-- fping_targets  (collector reads these; UI manages them)
+-- ----------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS fping_targets (
+    id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    name       TEXT        NOT NULL,
+    ip         TEXT        NOT NULL UNIQUE,
+    type       TEXT        NOT NULL DEFAULT 'host',
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);

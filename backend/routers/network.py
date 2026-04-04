@@ -232,6 +232,30 @@ class DeviceUpdate(BaseModel):
     device_type: Optional[Literal["workstation", "server", "printer", "ap", "unknown"]] = None
 
 
+class NetworkSettingItem(BaseModel):
+    key:        str
+    value:      str
+    updated_at: Optional[datetime] = None
+
+
+class NetworkSettingsUpdate(BaseModel):
+    settings: dict[str, str]
+
+
+class FpingTarget(BaseModel):
+    id:         str
+    name:       str
+    ip:         str
+    type:       str
+    created_at: Optional[datetime] = None
+
+
+class FpingTargetCreate(BaseModel):
+    name: str
+    ip:   str
+    type: str = "host"
+
+
 class IncidentResolve(BaseModel):
     root_cause: Optional[str] = None
     resolution_notes: Optional[str] = None
@@ -1297,3 +1321,108 @@ async def resolve_incident(
         resolution_notes=r.get("resolution_notes"),
         auto_detected=bool(r.get("auto_detected")),
     )
+
+
+# ── Network settings ──────────────────────────────────────────────────────────
+
+_DEFAULT_SETTINGS: dict[str, str] = {
+    "wan_packet_loss_threshold_pct": "5",
+    "internal_latency_threshold_ms": "50",
+    "port_error_threshold":          "50",
+    "traffic_anomaly_multiplier":    "5",
+    "business_hours_start":          "08:00",
+    "business_hours_end":            "18:00",
+}
+
+
+@router.get("/settings", response_model=list[NetworkSettingItem])
+async def get_settings(db: AsyncSession = Depends(get_db)):
+    """Return all network alert threshold settings."""
+    if not _IS_POSTGRES:
+        return [NetworkSettingItem(key=k, value=v) for k, v in _DEFAULT_SETTINGS.items()]
+
+    try:
+        rows = await _exec(db, "SELECT key, value, updated_at FROM network_settings ORDER BY key")
+    except Exception:
+        return [NetworkSettingItem(key=k, value=v) for k, v in _DEFAULT_SETTINGS.items()]
+
+    result = {r["key"]: r for r in rows}
+    out: list[NetworkSettingItem] = []
+    for k, default_v in _DEFAULT_SETTINGS.items():
+        if k in result:
+            out.append(NetworkSettingItem(key=k, value=result[k]["value"], updated_at=result[k].get("updated_at")))
+        else:
+            out.append(NetworkSettingItem(key=k, value=default_v))
+    return out
+
+
+@router.patch("/settings", response_model=list[NetworkSettingItem])
+async def update_settings(body: NetworkSettingsUpdate, db: AsyncSession = Depends(get_db)):
+    """Upsert one or more settings by key."""
+    if not _IS_POSTGRES:
+        raise HTTPException(status_code=503, detail="Network tables not available")
+
+    for key, value in body.settings.items():
+        if key not in _DEFAULT_SETTINGS:
+            raise HTTPException(status_code=400, detail=f"Unknown setting key: {key}")
+        await _exec(db,
+            "INSERT INTO network_settings (key, value, updated_at) VALUES (:key, :value, NOW()) "
+            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()",
+            {"key": key, "value": value})
+    await db.commit()
+
+    rows = await _exec(db, "SELECT key, value, updated_at FROM network_settings ORDER BY key")
+    result = {r["key"]: r for r in rows}
+    return [
+        NetworkSettingItem(key=k, value=result.get(k, {}).get("value", v),
+                           updated_at=result.get(k, {}).get("updated_at"))
+        for k, v in _DEFAULT_SETTINGS.items()
+    ]
+
+
+# ── fping targets ─────────────────────────────────────────────────────────────
+
+@router.get("/targets", response_model=list[FpingTarget])
+async def list_targets(db: AsyncSession = Depends(get_db)):
+    """List all fping monitoring targets."""
+    if not _IS_POSTGRES:
+        return []
+    try:
+        rows = await _exec(db,
+            "SELECT id::text AS id, name, ip, type, created_at FROM fping_targets ORDER BY created_at")
+        return [FpingTarget(**r) for r in rows]
+    except Exception:
+        return []
+
+
+@router.post("/targets", response_model=FpingTarget, status_code=201)
+async def create_target(body: FpingTargetCreate, db: AsyncSession = Depends(get_db)):
+    """Add a new fping monitoring target."""
+    if not _IS_POSTGRES:
+        raise HTTPException(status_code=503, detail="Network tables not available")
+
+    existing = await _exec(db,
+        "SELECT id FROM fping_targets WHERE ip = :ip", {"ip": body.ip})
+    if existing:
+        raise HTTPException(status_code=409, detail="Target with that IP already exists")
+
+    rows = await _exec(db,
+        "INSERT INTO fping_targets (name, ip, type) VALUES (:name, :ip, :type) "
+        "RETURNING id::text AS id, name, ip, type, created_at",
+        {"name": body.name, "ip": body.ip, "type": body.type})
+    return FpingTarget(**rows[0])
+
+
+@router.delete("/targets/{target_id}", status_code=204)
+async def delete_target(target_id: str, db: AsyncSession = Depends(get_db)):
+    """Remove a fping monitoring target."""
+    if not _IS_POSTGRES:
+        raise HTTPException(status_code=503, detail="Network tables not available")
+
+    existing = await _exec(db,
+        "SELECT id FROM fping_targets WHERE id::text = :id", {"id": target_id})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Target not found")
+
+    await _exec(db, "DELETE FROM fping_targets WHERE id::text = :id", {"id": target_id})
+    await db.commit()

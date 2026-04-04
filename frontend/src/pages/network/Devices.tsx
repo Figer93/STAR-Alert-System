@@ -4,7 +4,7 @@ import {
   Search, Monitor, Server, Printer, Wifi as WifiIcon,
   HelpCircle, ChevronUp, ChevronDown, ChevronsUpDown,
   ExternalLink, Edit2, Check, X, Trash2, AlertTriangle,
-  RefreshCw,
+  RefreshCw, Download,
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 
@@ -808,6 +808,33 @@ export default function Devices() {
 
         {/* Filter pills */}
         <div style={{ display: 'flex', gap: 6 }}>
+          {/* Export CSV */}
+          {sorted.length > 0 && (
+            <button
+              onClick={() => {
+                const header = ['IP', 'Hostname', 'MAC', 'Switch', 'Port', 'Type', 'Online', 'Last Seen', 'Notes']
+                const rows = sorted.map(d => [
+                  d.ip, d.hostname ?? '', d.mac ?? '', d.switch_id ?? '', d.port_id ?? '',
+                  d.device_type ?? 'unknown', d.is_online ? 'Yes' : 'No',
+                  d.last_seen ? new Date(d.last_seen).toISOString() : '', `"${(d.notes ?? '').replace(/"/g, '""')}"`,
+                ])
+                const csv = [header, ...rows].map(r => r.join(',')).join('\n')
+                const a = Object.assign(document.createElement('a'), {
+                  href: URL.createObjectURL(new Blob([csv], { type: 'text/csv' })),
+                  download: `devices_${new Date().toISOString().slice(0, 10)}.csv`,
+                })
+                a.click()
+              }}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 5,
+                background: 'none', border: '1px solid var(--border)',
+                color: 'var(--text-muted)', borderRadius: 20,
+                padding: '6px 12px', fontSize: 12, cursor: 'pointer', whiteSpace: 'nowrap',
+              }}
+            >
+              <Download size={11} /> Export CSV
+            </button>
+          )}
           {filterPills.map(p => (
             <button
               key={p.key}

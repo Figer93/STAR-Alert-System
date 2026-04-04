@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, useNavigate } from 'react-router-dom'
 import { useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react'
 import { Toaster, toast } from 'sonner'
 import Header from './components/layout/Header'
@@ -17,6 +17,59 @@ const NetworkLatency     = lazy(() => import('./pages/network/Latency'))
 const NetworkTraffic     = lazy(() => import('./pages/network/Traffic'))
 const NetworkInvestigate = lazy(() => import('./pages/network/Investigate'))
 const NetworkDevices     = lazy(() => import('./pages/network/Devices'))
+const NetworkSettings    = lazy(() => import('./pages/network/NetworkSettings'))
+const NetworkIncidents   = lazy(() => import('./pages/network/Incidents'))
+
+// ── Keyboard shortcuts (must be inside BrowserRouter for useNavigate) ─────────
+// G then O/P/L/T/I/D/N/S → navigate to Network sub-pages
+function KeyboardShortcuts() {
+  const navigate = useNavigate()
+  const pending  = useRef('')
+  const timer    = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    const ROUTES: Record<string, string> = {
+      go: '/network',
+      gp: '/network/ports',
+      gl: '/network/latency',
+      gt: '/network/traffic',
+      gi: '/network/investigate',
+      gd: '/network/devices',
+      gn: '/network/incidents',
+      gs: '/network/settings',
+    }
+
+    function handle(e: KeyboardEvent) {
+      const el = e.target as HTMLElement
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)) return
+      if (el.isContentEditable) return
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+      const key = e.key.toLowerCase()
+      if (key.length !== 1) return
+
+      if (timer.current) clearTimeout(timer.current)
+      timer.current = setTimeout(() => { pending.current = '' }, 1200)
+
+      pending.current += key
+      const dest = ROUTES[pending.current]
+      if (dest) {
+        navigate(dest)
+        pending.current = ''
+        if (timer.current) clearTimeout(timer.current)
+      } else if (pending.current.length > 2) {
+        pending.current = key
+      }
+    }
+
+    window.addEventListener('keydown', handle)
+    return () => {
+      window.removeEventListener('keydown', handle)
+      if (timer.current) clearTimeout(timer.current)
+    }
+  }, [navigate])
+
+  return null
+}
 
 function App() {
   const [wsConnected, setWsConnected] = useState(false)
@@ -75,6 +128,7 @@ function App() {
     <ErrorBoundary>
       <BrowserRouter>
         <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden' }}>
+          <KeyboardShortcuts />
           <Header wsConnected={wsConnected} />
           <main style={{ flex: 1, overflow: 'hidden' }}>
             <Suspense fallback={null}>
@@ -88,7 +142,9 @@ function App() {
               <Route path="/network/latency"     element={<NetworkLatency />} />
               <Route path="/network/traffic"     element={<NetworkTraffic />} />
               <Route path="/network/investigate" element={<NetworkInvestigate />} />
-              <Route path="/network/devices"     element={<NetworkDevices />} />
+              <Route path="/network/devices"    element={<NetworkDevices />} />
+              <Route path="/network/incidents"  element={<NetworkIncidents />} />
+              <Route path="/network/settings"   element={<NetworkSettings />} />
             </Routes>
           </Suspense>
           </main>

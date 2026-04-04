@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Activity } from 'lucide-react'
+import { Activity, Download } from 'lucide-react'
 import {
   ComposedChart, Line, Area, XAxis, YAxis, CartesianGrid,
   Tooltip as ReTooltip, ReferenceLine, Brush, ResponsiveContainer,
@@ -641,6 +641,37 @@ export default function NetworkLatency() {
             ICMP round-trip times per target — refreshes every 60 s
           </p>
         </div>
+
+        {/* Export CSV */}
+        {stats.length > 0 && (
+          <button
+            onClick={() => {
+              const header = ['Target', 'Avg RTT (ms)', 'P95 RTT (ms)', 'Max RTT (ms)', 'Avg Loss %', 'Uptime %']
+              const rows = stats.map(s => [
+                s.target,
+                s.avgRtt?.toFixed(1) ?? '',
+                s.p95Rtt?.toFixed(1) ?? '',
+                s.maxRtt?.toFixed(1) ?? '',
+                s.avgLoss?.toFixed(1) ?? '0',
+                s.uptime.toFixed(1),
+              ])
+              const csv = [header, ...rows].map(r => r.join(',')).join('\n')
+              const a = Object.assign(document.createElement('a'), {
+                href: URL.createObjectURL(new Blob([csv], { type: 'text/csv' })),
+                download: `latency_${period}_${new Date().toISOString().slice(0, 10)}.csv`,
+              })
+              a.click()
+            }}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 5,
+              background: 'none', border: '1px solid var(--border)',
+              color: 'var(--text-muted)', borderRadius: 'var(--radius-sm)',
+              padding: '4px 10px', fontSize: 11, cursor: 'pointer',
+            }}
+          >
+            <Download size={11} /> Export CSV
+          </button>
+        )}
 
         {/* Period buttons */}
         <div style={{ display: 'flex', gap: 3 }}>

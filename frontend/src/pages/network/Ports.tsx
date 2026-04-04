@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import {
   Plug, Search, X, ExternalLink,
   ArrowDown, ArrowUp, ChevronUp, ChevronDown,
-  Server, Monitor, Wifi as WifiIcon, Router, HardDrive,
+  Server, Monitor, Wifi as WifiIcon, Router, HardDrive, Download,
 } from 'lucide-react'
 import {
   BarChart, Bar, XAxis, YAxis,
@@ -801,6 +801,37 @@ export default function NetworkPorts() {
         {/* ── Port table ──────────────────────────────────────────────────── */}
         {!loading && filtered.length > 0 && (
           <div className="card" style={{ overflow: 'auto', flexShrink: 0 }}>
+            {/* Export row */}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '8px 12px 0' }}>
+              <button
+                onClick={() => {
+                  const header = ['Port', 'Device', 'IP', 'RX rate', 'TX rate', 'Errors (1h)', 'Status']
+                  const rows = sorted.map(p => [
+                    p.port_name ?? p.port_id,
+                    p.device_name ?? '',
+                    p.device_ip ?? '',
+                    p.rx_bytes_rate,
+                    p.tx_bytes_rate,
+                    p.rx_errors_1h + p.tx_errors_1h,
+                    p.status,
+                  ])
+                  const csv = [header, ...rows].map(r => r.join(',')).join('\n')
+                  const a = Object.assign(document.createElement('a'), {
+                    href: URL.createObjectURL(new Blob([csv], { type: 'text/csv' })),
+                    download: `ports_${new Date().toISOString().slice(0, 10)}.csv`,
+                  })
+                  a.click()
+                }}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 5,
+                  background: 'none', border: '1px solid var(--border)',
+                  color: 'var(--text-muted)', borderRadius: 'var(--radius-sm)',
+                  padding: '4px 10px', fontSize: 11, cursor: 'pointer',
+                }}
+              >
+                <Download size={11} /> Export CSV
+              </button>
+            </div>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
               <thead>
                 <tr style={{ borderBottom: '1px solid var(--border)' }}>

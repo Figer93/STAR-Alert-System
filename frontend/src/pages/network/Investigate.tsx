@@ -759,6 +759,100 @@ export default function NetworkInvestigate() {
   const searchRef                     = useRef<HTMLInputElement>(null)
   const initialised                   = useRef(false)
 
+  // ── Export Report ────────────────────────────────────────────────────────────
+  function exportReport() {
+    if (!invData || !selectedIp) return
+    const d    = invData.device as Record<string, unknown> | null
+    const hyp  = invData.hypothesis
+    const tl   = invData.timeline
+    const m    = invData.metrics
+
+    const badge = (sev: string) => {
+      const cls = sev === 'critical' ? 'critical' : sev === 'high' ? 'high' : sev === 'medium' ? 'medium' : 'low'
+      return `<span class="print-badge print-badge-${cls}">${sev}</span>`
+    }
+
+    const tlRows = tl.slice().reverse().map(e =>
+      `<tr><td>${new Date(e.time).toLocaleString()}</td><td>${badge(e.severity)}</td><td>${e.event_type}</td><td>${e.description}</td></tr>`
+    ).join('')
+
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Investigation Report — ${selectedIp}</title>
+<style>
+  body { font-family: Georgia, serif; font-size: 12pt; color: #111; padding: 24pt; max-width: 900px; margin: 0 auto; }
+  h1   { font-size: 18pt; margin-bottom: 4pt; }
+  h2   { font-size: 13pt; margin: 18pt 0 5pt; border-bottom: 1px solid #ccc; padding-bottom: 3pt; }
+  p    { margin: 3pt 0; line-height: 1.5; }
+  .meta { color: #666; font-size: 10pt; margin-bottom: 16pt; }
+  table { width: 100%; border-collapse: collapse; font-size: 10pt; margin-top: 6pt; }
+  th { background: #f0f0f0; border: 1px solid #ccc; padding: 4pt 6pt; text-align: left; font-weight: 600; }
+  td { border: 1px solid #ddd; padding: 3pt 6pt; }
+  tr:nth-child(even) td { background: #f9f9f9; }
+  .print-badge { display: inline-block; padding: 1pt 5pt; border-radius: 3pt; font-size: 9pt; font-weight: 700; text-transform: uppercase; }
+  .print-badge-critical { background: #fee2e2; color: #b91c1c; }
+  .print-badge-high     { background: #ffedd5; color: #c2410c; }
+  .print-badge-medium   { background: #fef3c7; color: #92400e; }
+  .print-badge-low      { background: #d1fae5; color: #065f46; }
+  .diagnosis { background: #f9fafb; border-left: 4px solid #111; padding: 10pt 14pt; margin: 8pt 0; }
+  .evidence-item::before { content: "• "; }
+  @media print { @page { margin: 20mm; } }
+</style>
+</head>
+<body>
+<h1>Investigation Report</h1>
+<p class="meta">
+  Device: <strong>${selectedIp}</strong>
+  ${d?.hostname ? ` · Hostname: <strong>${d.hostname}</strong>` : ''}
+  · Generated: ${new Date().toLocaleString()}
+  · Period: ${dateStart} → ${dateEnd}
+</p>
+
+${d ? `<h2>Device Info</h2>
+<table>
+  <tr><th>Field</th><th>Value</th></tr>
+  ${Object.entries(d).filter(([k]) => !['switch_id','port_id'].includes(k)).map(([k,v]) =>
+    `<tr><td>${k}</td><td>${v ?? '—'}</td></tr>`).join('')}
+</table>` : ''}
+
+<h2>Diagnosis</h2>
+<div class="diagnosis">
+  <p><strong>Likely cause:</strong> ${hyp.likely_cause.replace(/_/g, ' ')} &nbsp; <strong>Confidence:</strong> ${hyp.confidence}</p>
+  <p><strong>Evidence:</strong></p>
+  ${hyp.evidence.map(e => `<p class="evidence-item">${e}</p>`).join('')}
+  <p style="margin-top:8pt"><strong>Recommended action:</strong> ${hyp.recommended_action}</p>
+</div>
+
+<h2>Metrics (selected period)</h2>
+<table>
+  <tr><th>Metric</th><th>Value</th></tr>
+  <tr><td>Avg gateway RTT</td><td>${m.avg_rtt_gateway_ms != null ? m.avg_rtt_gateway_ms.toFixed(1) + ' ms' : '—'}</td></tr>
+  <tr><td>Avg gateway packet loss</td><td>${m.avg_packet_loss_gateway_pct.toFixed(1)}%</td></tr>
+  <tr><td>Avg WAN packet loss</td><td>${m.avg_packet_loss_wan_pct.toFixed(1)}%</td></tr>
+  <tr><td>Port RX errors</td><td>${m.port_rx_errors}</td></tr>
+  <tr><td>Port TX errors</td><td>${m.port_tx_errors}</td></tr>
+  <tr><td>Bytes sent</td><td>${(m.bytes_sent / 1024 / 1024).toFixed(1)} MB</td></tr>
+  <tr><td>Bytes received</td><td>${(m.bytes_received / 1024 / 1024).toFixed(1)} MB</td></tr>
+</table>
+
+<h2>Timeline (${tl.length} events)</h2>
+${tl.length === 0 ? '<p>No events in selected period.</p>' : `
+<table>
+  <tr><th>Time</th><th>Severity</th><th>Type</th><th>Description</th></tr>
+  ${tlRows}
+</table>`}
+</body>
+</html>`
+
+    const w = window.open('', '_blank')
+    if (!w) return
+    w.document.write(html)
+    w.document.close()
+    w.onload = () => w.print()
+  }
+
   // Load devices for autocomplete
   useEffect(() => {
     fetch('/api/network/devices')
@@ -955,6 +1049,24 @@ export default function NetworkInvestigate() {
             >
               Analyze
             </button>
+
+            {invData && (
+              <button
+                onClick={exportReport}
+                title="Print / export investigation report"
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 6,
+                  padding: '10px 14px', fontSize: 12, fontWeight: 600,
+                  borderRadius: 'var(--radius)', cursor: 'pointer',
+                  border: '1px solid var(--border)',
+                  background: 'var(--bg-raised)',
+                  color: 'var(--text-muted)',
+                  flexShrink: 0,
+                }}
+              >
+                <Download size={13} /> Export Report
+              </button>
+            )}
           </div>
 
           {/* Autocomplete */}

@@ -374,3 +374,70 @@ select.input { cursor: pointer; }
     flex: 1 1 calc(50% - 6px) !important;
   }
 }
+
+/* ── Print stylesheet ─────────────────────────────────────────────────────── */
+@media print {
+  /* Hide everything by default */
+  body > * { display: none !important; }
+
+  /* Show only the designated print region */
+  .print-region { display: block !important; }
+
+  /* Within print region, hide interactive chrome */
+  .no-print { display: none !important; }
+
+  body {
+    background: #fff !important;
+    color: #111 !important;
+    font-family: Georgia, serif;
+    font-size: 12pt;
+    line-height: 1.5;
+  }
+
+  .print-region {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    background: #fff;
+    color: #111;
+    padding: 24pt;
+    overflow: visible;
+  }
+
+  .print-region h1  { font-size: 18pt; margin-bottom: 6pt; }
+  .print-region h2  { font-size: 13pt; margin: 14pt 0 5pt; border-bottom: 1px solid #ccc; padding-bottom: 3pt; }
+  .print-region h3  { font-size: 11pt; margin: 10pt 0 4pt; }
+  .print-region p   { margin: 3pt 0; }
+
+  .print-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 10pt;
+    margin-top: 6pt;
+  }
+  .print-table th {
+    background: #f0f0f0;
+    border: 1px solid #ccc;
+    padding: 4pt 6pt;
+    text-align: left;
+    font-weight: 600;
+  }
+  .print-table td {
+    border: 1px solid #ddd;
+    padding: 3pt 6pt;
+  }
+  .print-table tr:nth-child(even) td { background: #f9f9f9; }
+
+  .print-badge {
+    display: inline-block;
+    padding: 1pt 5pt;
+    border-radius: 3pt;
+    font-size: 9pt;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+  .print-badge-critical { background: #fee2e2; color: #b91c1c; }
+  .print-badge-high     { background: #ffedd5; color: #c2410c; }
+  .print-badge-medium   { background: #fef3c7; color: #92400e; }
+  .print-badge-low      { background: #d1fae5; color: #065f46; }
+}
