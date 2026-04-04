@@ -21,6 +21,7 @@ env/
 .env
 .env.local
 .env.*.local
+collector/.env
 
 # Logs
 logs/

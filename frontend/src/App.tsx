@@ -11,6 +11,12 @@ const AlertHistory = lazy(() => import('./pages/AlertHistory'))
 const Sources      = lazy(() => import('./pages/Sources'))
 const Settings     = lazy(() => import('./pages/Settings'))
 
+const NetworkOverview    = lazy(() => import('./pages/network/Overview'))
+const NetworkPorts       = lazy(() => import('./pages/network/Ports'))
+const NetworkLatency     = lazy(() => import('./pages/network/Latency'))
+const NetworkTraffic     = lazy(() => import('./pages/network/Traffic'))
+const NetworkInvestigate = lazy(() => import('./pages/network/Investigate'))
+
 function App() {
   const [wsConnected, setWsConnected] = useState(false)
   const wsRef       = useRef<WebSocket | null>(null)
@@ -76,6 +82,11 @@ function App() {
               <Route path="/history" element={<AlertHistory />} />
               <Route path="/sources" element={<Sources />} />
               <Route path="/settings" element={<Settings />} />
+              <Route path="/network"             element={<NetworkOverview />} />
+              <Route path="/network/ports"       element={<NetworkPorts />} />
+              <Route path="/network/latency"     element={<NetworkLatency />} />
+              <Route path="/network/traffic"     element={<NetworkTraffic />} />
+              <Route path="/network/investigate" element={<NetworkInvestigate />} />
             </Routes>
           </Suspense>
           </main>

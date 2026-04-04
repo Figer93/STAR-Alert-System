@@ -1,0 +1,102 @@
+# STAR Alert System — Network Collector Stack
+# Runs on any machine inside the office network.
+# Copy .env.example to .env, fill in all values, then:
+#   docker compose up -d
+
+version: "3.8"
+
+services:
+
+  # ── goflow2: receives NetFlow v5/v9/IPFIX from pfSense ─────────────────────
+  # Listens on UDP ${NETFLOW_PORT} and writes JSON lines to a shared volume.
+  # The goflow2_parser sidecar tails that file and inserts into Supabase.
+  #
+  # NOTE: direct PostgreSQL output is not available in all goflow2 builds.
+  # We therefore use the -transport=file approach and a Python sidecar.
+  # If your goflow2 image does not support -transport=file, replace the
+  # command block with:
+  #   command: sh -c 'goflow2 -netflow.enabled=true -netflow.port=9995 >> /data/flows.jsonl'
+  goflow2:
+    image: netsampler/goflow2:latest
+    restart: unless-stopped
+    ports:
+      - "${NETFLOW_PORT:-9995}:9995/udp"
+    command:
+      - -netflow.enabled=true
+      - -netflow.port=9995
+      - -transport=file
+      - -transport.file.path=/data/flows.jsonl
+    volumes:
+      - goflow_data:/data
+    networks:
+      - collector_net
+
+  # ── goflow2_parser: tails goflow2 JSON → Supabase network_flows ────────────
+  goflow2_parser:
+    build: ./services/goflow2_parser
+    restart: unless-stopped
+    depends_on:
+      - goflow2
+    environment:
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_KEY: ${SUPABASE_KEY}
+      FLOWS_FILE: /data/flows.jsonl
+      BATCH_SIZE: "100"
+      BATCH_INTERVAL: "2.0"
+    volumes:
+      - goflow_data:/data
+    networks:
+      - collector_net
+
+  # ── telegraf: polls UniFi controller + ping → Supabase ─────────────────────
+  telegraf:
+    image: telegraf:latest
+    restart: unless-stopped
+    environment:
+      SUPABASE_DATABASE_URL: ${DATABASE_URL}
+      UNIFI_URL: ${UNIFI_URL}
+      UNIFI_PORT: ${UNIFI_PORT:-8443}
+      UNIFI_USER: ${UNIFI_USER}
+      UNIFI_PASS: ${UNIFI_PASS}
+      UNIFI_SITE: ${UNIFI_SITE:-default}
+      UNIFI_VERIFY_SSL: ${UNIFI_VERIFY_SSL:-false}
+      GATEWAY_IP: ${GATEWAY_IP}
+    volumes:
+      - ./telegraf/telegraf.conf:/etc/telegraf/telegraf.conf:ro
+    networks:
+      - collector_net
+
+  # ── fping_collector: measures latency for all known IPs every 10 s ─────────
+  # Requires NET_RAW capability to send ICMP packets.
+  fping_collector:
+    build: ./services/fping_collector
+    restart: unless-stopped
+    cap_add:
+      - NET_RAW
+    environment:
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_KEY: ${SUPABASE_KEY}
+      GATEWAY_IP: ${GATEWAY_IP}
+      ISP_GATEWAY_IP: ${ISP_GATEWAY_IP:-}
+      FPING_INTERVAL: "10"
+    networks:
+      - collector_net
+
+  # ── health_reporter: heartbeat + silent-source detection ───────────────────
+  health_reporter:
+    build: ./services/health_reporter
+    restart: unless-stopped
+    environment:
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_KEY: ${SUPABASE_KEY}
+      COLLECTOR_ID: ${COLLECTOR_ID:-office-main}
+      REPORT_INTERVAL: "60"
+    networks:
+      - collector_net
+
+volumes:
+  goflow_data:   # shared between goflow2 and goflow2_parser
+
+networks:
+  collector_net:
+    driver: bridge

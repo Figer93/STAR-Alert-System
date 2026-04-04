@@ -1,0 +1,26 @@
+# goflow2 configuration — reference file
+# The active configuration is passed via command-line flags in docker-compose.yml.
+# This file documents the equivalent settings and can replace the command block if
+# your goflow2 build supports --config.
+#
+# Usage (alternative to docker-compose command block):
+#   command: ["goflow2", "--config", "/etc/goflow2/config.yaml"]
+
+log:
+  level: "info"
+  format: "json"
+
+# Accept NetFlow v5, v9, and IPFIX on the port set by NETFLOW_PORT (default 9995).
+# pfSense softflowd sends to this port — see README for pfSense configuration.
+listen:
+  netflow:
+    addr: "0.0.0.0"
+    port: 9995
+
+# Write decoded flow records as JSON lines to a shared Docker volume.
+# The goflow2_parser sidecar tails this file and inserts into Supabase.
+transport:
+  file:
+    path: "/data/flows.jsonl"
+    # Rotate at 100 MB so the file does not grow unbounded between parser reads.
+    max_size_mb: 100

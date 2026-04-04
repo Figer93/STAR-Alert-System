@@ -10,7 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.config import settings
 from backend.database import init_db
-from backend.routers import alerts, ingest, maintenance, notifications, notification_settings, rules, sources, stats, ws
+from backend.network_monitor import run_network_checks
+from backend.routers import alerts, ingest, maintenance, network, notifications, notification_settings, rules, sources, stats, ws
 from backend.websocket_manager import ws_manager
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -179,6 +180,7 @@ async def lifespan(app: FastAPI):
     # Background tasks
     broadcast_task = asyncio.create_task(_stats_broadcaster())
     offline_task   = asyncio.create_task(_source_offline_checker())
+    network_task   = asyncio.create_task(run_network_checks())
 
     # UniFi polling loop (no-op if no UniFi sources are configured)
     try:
@@ -192,6 +194,7 @@ async def lifespan(app: FastAPI):
 
     broadcast_task.cancel()
     offline_task.cancel()
+    network_task.cancel()
     if unifi_task:
         unifi_task.cancel()
     if syslog_transport:
@@ -225,6 +228,7 @@ app.include_router(ingest.router)
 app.include_router(notifications.router)
 app.include_router(notification_settings.router)
 app.include_router(maintenance.router)
+app.include_router(network.router)
 app.include_router(ws.router)
 
 

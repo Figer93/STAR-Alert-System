@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     VITE_API_URL: str = "http://localhost:8000"
     VITE_WS_URL: str = "ws://localhost:8000/ws"
 
+    # Public-facing URL of the dashboard, used in Telegram alert messages.
+    # Leave blank to omit links from notifications.
+    STAR_URL: str = ""
+
     @property
     def telegram_chat_id_list(self) -> List[str]:
         return [cid.strip() for cid in self.TELEGRAM_CHAT_IDS.split(",") if cid.strip()]
