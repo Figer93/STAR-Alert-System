@@ -309,7 +309,7 @@ export default function NetworkOverview() {
     : []
 
   const gatewayLatest = gatewayKey && chartSeries.length > 0
-    ? (chartSeries[chartSeries.length - 1][gatewayKey] as number | null)
+    ? ((chartSeries[chartSeries.length - 1] as Record<string, unknown>)[gatewayKey] as number | null)
     : null
 
   // Worst open incident severity
