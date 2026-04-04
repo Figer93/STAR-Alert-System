@@ -16,6 +16,7 @@ const NetworkPorts       = lazy(() => import('./pages/network/Ports'))
 const NetworkLatency     = lazy(() => import('./pages/network/Latency'))
 const NetworkTraffic     = lazy(() => import('./pages/network/Traffic'))
 const NetworkInvestigate = lazy(() => import('./pages/network/Investigate'))
+const NetworkDevices     = lazy(() => import('./pages/network/Devices'))
 
 function App() {
   const [wsConnected, setWsConnected] = useState(false)
@@ -87,6 +88,7 @@ function App() {
               <Route path="/network/latency"     element={<NetworkLatency />} />
               <Route path="/network/traffic"     element={<NetworkTraffic />} />
               <Route path="/network/investigate" element={<NetworkInvestigate />} />
+              <Route path="/network/devices"     element={<NetworkDevices />} />
             </Routes>
           </Suspense>
           </main>

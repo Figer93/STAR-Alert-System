@@ -3,7 +3,7 @@ import { NavLink, useLocation } from 'react-router-dom'
 import {
   Activity, LayoutDashboard, History, Radio, Settings,
   Menu, X, Wifi, WifiOff,
-  Globe, Plug, TrendingUp, Search, ChevronDown,
+  Globe, Plug, TrendingUp, Search, ChevronDown, Monitor,
 } from 'lucide-react'
 
 interface Props { wsConnected: boolean }
@@ -21,6 +21,7 @@ const networkSubItems = [
   { to: '/network/latency',     label: 'Latency',     icon: Activity },
   { to: '/network/traffic',     label: 'Traffic',     icon: TrendingUp },
   { to: '/network/investigate', label: 'Investigate', icon: Search },
+  { to: '/network/devices',     label: 'Devices',     icon: Monitor },
 ]
 
 export default function Header({ wsConnected }: Props) {

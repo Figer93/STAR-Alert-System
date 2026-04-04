@@ -873,6 +873,22 @@ async def update_device(
     return DeviceRow(**rows[0])
 
 
+@router.delete("/devices/{ip:path}", status_code=204)
+async def delete_device(ip: str, db: AsyncSession = Depends(get_db)):
+    """Remove a device from the registry entirely ('forget device')."""
+    if not _IS_POSTGRES:
+        raise HTTPException(status_code=503, detail="Network tables not available")
+
+    existing = await _exec(db,
+        "SELECT ip::text AS ip FROM device_registry WHERE ip::text = :ip",
+        {"ip": ip})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    await _exec(db, "DELETE FROM device_registry WHERE ip::text = :ip", {"ip": ip})
+    await db.commit()
+
+
 @router.get("/device/{ip:path}", response_model=DeviceDetail)
 async def get_device(ip: str, db: AsyncSession = Depends(get_db)):
     """Full device profile: registry info, current port state, flows, latency, incidents."""
