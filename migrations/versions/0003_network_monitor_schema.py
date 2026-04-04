@@ -26,6 +26,33 @@ def _is_postgres() -> bool:
 def upgrade() -> None:
 
     # ------------------------------------------------------------------
+    # Create enum types with IF NOT EXISTS to survive partial re-runs
+    # ------------------------------------------------------------------
+    if _is_postgres():
+        bind = op.get_bind()
+        bind.execute(sa.text(
+            "CREATE TYPE IF NOT EXISTS device_type_enum AS ENUM "
+            "('workstation', 'server', 'printer', 'ap', 'unknown')"
+        ))
+        bind.execute(sa.text(
+            "CREATE TYPE IF NOT EXISTS flow_direction_enum AS ENUM "
+            "('inbound', 'outbound', 'internal')"
+        ))
+        bind.execute(sa.text(
+            "CREATE TYPE IF NOT EXISTS latency_target_type_enum AS ENUM "
+            "('gateway', 'wan', 'dns', 'internal')"
+        ))
+        bind.execute(sa.text(
+            "CREATE TYPE IF NOT EXISTS incident_severity_enum AS ENUM "
+            "('low', 'medium', 'high', 'critical')"
+        ))
+        bind.execute(sa.text(
+            "CREATE TYPE IF NOT EXISTS incident_category_enum AS ENUM "
+            "('wan_issue', 'interface_error', 'device_offline', "
+            "'internal_latency', 'traffic_anomaly', 'firewall_drop')"
+        ))
+
+    # ------------------------------------------------------------------
     # device_registry  (referenced by other tables, created first)
     # ------------------------------------------------------------------
     op.create_table(
@@ -40,7 +67,7 @@ def upgrade() -> None:
         sa.Column("is_online",   sa.Boolean(),                  nullable=False, server_default="false"),
         sa.Column(
             "device_type",
-            sa.Enum("workstation", "server", "printer", "ap", "unknown", name="device_type_enum"),
+            sa.Enum("workstation", "server", "printer", "ap", "unknown", name="device_type_enum", create_type=False),
             nullable=False,
             server_default="unknown",
         ),
@@ -65,7 +92,7 @@ def upgrade() -> None:
         sa.Column("device_name", sa.Text(),                     nullable=True),
         sa.Column(
             "direction",
-            sa.Enum("inbound", "outbound", "internal", name="flow_direction_enum"),
+            sa.Enum("inbound", "outbound", "internal", name="flow_direction_enum", create_type=False),
             nullable=True,
         ),
     )
@@ -110,7 +137,7 @@ def upgrade() -> None:
         sa.Column("target_ip",        postgresql.INET() if _is_postgres() else sa.String(45), nullable=True),
         sa.Column(
             "target_type",
-            sa.Enum("gateway", "wan", "dns", "internal", name="latency_target_type_enum"),
+            sa.Enum("gateway", "wan", "dns", "internal", name="latency_target_type_enum", create_type=False),
             nullable=True,
         ),
         sa.Column("rtt_ms",           sa.Float(),                 nullable=True),
@@ -134,7 +161,7 @@ def upgrade() -> None:
         sa.Column("resolved_at",      sa.DateTime(timezone=True),  nullable=True),
         sa.Column(
             "severity",
-            sa.Enum("low", "medium", "high", "critical", name="incident_severity_enum"),
+            sa.Enum("low", "medium", "high", "critical", name="incident_severity_enum", create_type=False),
             nullable=False,
         ),
         sa.Column(
@@ -142,7 +169,7 @@ def upgrade() -> None:
             sa.Enum(
                 "wan_issue", "interface_error", "device_offline",
                 "internal_latency", "traffic_anomaly", "firewall_drop",
-                name="incident_category_enum",
+                name="incident_category_enum", create_type=False,
             ),
             nullable=False,
         ),
