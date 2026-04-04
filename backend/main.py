@@ -1,4 +1,4 @@
-# v1.1.2 — Network Monitor
+# v1.1.3 — Network Monitor
 import asyncio
 import logging
 import logging.handlers

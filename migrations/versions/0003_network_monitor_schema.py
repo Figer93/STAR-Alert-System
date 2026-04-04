@@ -26,12 +26,21 @@ def _is_postgres() -> bool:
 def upgrade() -> None:
 
     # ------------------------------------------------------------------
-    # Drop any orphaned enum types left by a previous partial migration
-    # run. The tables never existed (migration never completed), so these
-    # are safe to drop and let create_table recreate them cleanly.
+    # Clean up any partial state from previous failed migration runs.
+    # Drop tables first (they depend on the enum types), then the enums.
+    # All objects are recreated below, so this is a safe idempotent reset.
     # ------------------------------------------------------------------
     if _is_postgres():
         bind = op.get_bind()
+        for _tbl in (
+            "collector_heartbeat",
+            "network_incidents",
+            "latency_metrics",
+            "switch_port_metrics",
+            "network_flows",
+            "device_registry",
+        ):
+            bind.execute(sa.text(f"DROP TABLE IF EXISTS {_tbl} CASCADE"))
         for _enum in (
             "device_type_enum",
             "flow_direction_enum",
