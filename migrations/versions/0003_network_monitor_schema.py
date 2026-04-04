@@ -26,31 +26,31 @@ def _is_postgres() -> bool:
 def upgrade() -> None:
 
     # ------------------------------------------------------------------
-    # Create enum types with IF NOT EXISTS to survive partial re-runs
+    # Create enum types — guarded with pg_type check to survive re-runs
+    # (CREATE TYPE IF NOT EXISTS not supported on all PG versions)
     # ------------------------------------------------------------------
     if _is_postgres():
         bind = op.get_bind()
-        bind.execute(sa.text(
-            "CREATE TYPE IF NOT EXISTS device_type_enum AS ENUM "
-            "('workstation', 'server', 'printer', 'ap', 'unknown')"
-        ))
-        bind.execute(sa.text(
-            "CREATE TYPE IF NOT EXISTS flow_direction_enum AS ENUM "
-            "('inbound', 'outbound', 'internal')"
-        ))
-        bind.execute(sa.text(
-            "CREATE TYPE IF NOT EXISTS latency_target_type_enum AS ENUM "
-            "('gateway', 'wan', 'dns', 'internal')"
-        ))
-        bind.execute(sa.text(
-            "CREATE TYPE IF NOT EXISTS incident_severity_enum AS ENUM "
-            "('low', 'medium', 'high', 'critical')"
-        ))
-        bind.execute(sa.text(
-            "CREATE TYPE IF NOT EXISTS incident_category_enum AS ENUM "
-            "('wan_issue', 'interface_error', 'device_offline', "
-            "'internal_latency', 'traffic_anomaly', 'firewall_drop')"
-        ))
+        bind.execute(sa.text("""
+            DO $$ BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'device_type_enum') THEN
+                    CREATE TYPE device_type_enum AS ENUM ('workstation','server','printer','ap','unknown');
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'flow_direction_enum') THEN
+                    CREATE TYPE flow_direction_enum AS ENUM ('inbound','outbound','internal');
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'latency_target_type_enum') THEN
+                    CREATE TYPE latency_target_type_enum AS ENUM ('gateway','wan','dns','internal');
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'incident_severity_enum') THEN
+                    CREATE TYPE incident_severity_enum AS ENUM ('low','medium','high','critical');
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'incident_category_enum') THEN
+                    CREATE TYPE incident_category_enum AS ENUM
+                        ('wan_issue','interface_error','device_offline','internal_latency','traffic_anomaly','firewall_drop');
+                END IF;
+            END $$;
+        """))
 
     # ------------------------------------------------------------------
     # device_registry  (referenced by other tables, created first)
