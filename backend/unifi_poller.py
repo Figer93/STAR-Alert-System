@@ -77,6 +77,7 @@ class UniFiSourcePoller:
         self._alarm_ids_seen:  set[str] = set()
 
         self._last_poll_ts: float = 0.0
+        self._consecutive_failures: int = 0
 
     # ── Config helpers ────────────────────────────────────────────────────────
 
@@ -100,7 +101,12 @@ class UniFiSourcePoller:
 
     @property
     def _poll_interval(self) -> int:
-        return max(10, int(self.config.get("poll_interval", 60)))
+        base = max(10, int(self.config.get("poll_interval", 60)))
+        # Exponential backoff after consecutive failures (cap at 10 minutes)
+        if self._consecutive_failures > 0:
+            backoff = min(base * (2 ** (self._consecutive_failures - 1)), 600)
+            return int(backoff)
+        return base
 
     def _ssl_context(self) -> Optional[ssl.SSLContext]:
         if not self.config.get("verify_ssl", False):
@@ -150,7 +156,13 @@ class UniFiSourcePoller:
                 )
                 return False
         except Exception as exc:
-            logger.warning("UniFi [%s]: login error — %s", self.slug, exc)
+            self._consecutive_failures += 1
+            if self._consecutive_failures <= 3:
+                logger.warning("UniFi [%s]: login error — %s", self.slug, exc)
+            elif self._consecutive_failures == 4:
+                logger.warning("UniFi [%s]: repeated login failures, backing off (further errors suppressed)", self.slug)
+            else:
+                logger.debug("UniFi [%s]: login error (failure #%d) — %s", self.slug, self._consecutive_failures, exc)
             return False
 
     async def _get(self, path: str) -> Optional[list[dict]]:
@@ -416,7 +428,9 @@ async def _run_poll_cycle(slug: str, poller: UniFiSourcePoller) -> None:
         from backend.database import AsyncSessionLocal
         async with AsyncSessionLocal() as db:
             await poller.poll(db)
+        poller._consecutive_failures = 0
     except Exception:
+        poller._consecutive_failures += 1
         logger.exception("UniFi [%s]: poll cycle error", slug)
 
 
