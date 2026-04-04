@@ -1,17 +1,19 @@
 import { useEffect, useState } from 'react'
 import { Plug, AlertTriangle, ArrowDown, ArrowUp } from 'lucide-react'
 
-interface PortRow {
-  switch_id:   string
-  switch_name: string | null
-  port_id:     string
-  port_name:   string | null
-  rx_bps:      number
-  tx_bps:      number
-  rx_errors:   number
-  tx_errors:   number
-  link_speed:  number | null
-  time:        string
+interface PortStatus {
+  switch_id:      string
+  switch_name:    string | null
+  port_id:        string
+  port_name:      string | null
+  device_name:    string | null
+  device_ip:      string | null
+  rx_bytes_rate:  number
+  tx_bytes_rate:  number
+  rx_errors_1h:   number
+  tx_errors_1h:   number
+  status:         'healthy' | 'warning' | 'error' | 'empty' | 'uplink'
+  last_error_time: string | null
 }
 
 function bps(n: number): string {
@@ -21,8 +23,15 @@ function bps(n: number): string {
   return `${n.toFixed(0)} bps`
 }
 
+function statusColour(s: PortStatus['status']): string {
+  if (s === 'healthy' || s === 'uplink') return 'var(--green)'
+  if (s === 'warning') return 'var(--amber)'
+  if (s === 'error')   return 'var(--red)'
+  return 'var(--text-dim)'
+}
+
 export default function NetworkPorts() {
-  const [rows, setRows]       = useState<PortRow[]>([])
+  const [rows, setRows]       = useState<PortStatus[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState(false)
 
@@ -33,7 +42,7 @@ export default function NetworkPorts() {
       try {
         const res = await fetch('/api/network/ports')
         if (!res.ok) throw new Error('not ok')
-        const d = await res.json()
+        const d: PortStatus[] = await res.json()
         if (!cancelled) { setRows(d); setError(false) }
       } catch {
         if (!cancelled) setError(true)
@@ -46,7 +55,7 @@ export default function NetworkPorts() {
     return () => { cancelled = true; clearInterval(id) }
   }, [])
 
-  const hasErrors = rows.some(r => r.rx_errors > 0 || r.tx_errors > 0)
+  const hasErrors = rows.some(r => r.rx_errors_1h > 0 || r.tx_errors_1h > 0)
 
   return (
     <div style={{ padding: 16, height: '100%', overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -104,7 +113,7 @@ export default function NetworkPorts() {
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead>
               <tr style={{ borderBottom: '1px solid var(--border)' }}>
-                {['Switch', 'Port', 'RX', 'TX', 'Errors', 'Speed'].map(h => (
+                {['Switch', 'Port', 'Device', 'RX', 'TX', 'Errors', 'Status'].map(h => (
                   <th key={h} style={{
                     padding: '8px 12px', textAlign: 'left',
                     fontSize: 10, fontWeight: 700, letterSpacing: '0.06em',
@@ -117,7 +126,7 @@ export default function NetworkPorts() {
             </thead>
             <tbody>
               {rows.map((r, i) => {
-                const hasErr = r.rx_errors > 0 || r.tx_errors > 0
+                const errors = r.rx_errors_1h + r.tx_errors_1h
                 return (
                   <tr key={i} style={{ borderBottom: '1px solid var(--border-dim)' }}>
                     <td style={{ padding: '8px 12px', color: 'var(--text-dim)' }}>
@@ -126,29 +135,30 @@ export default function NetworkPorts() {
                     <td style={{ padding: '8px 12px', color: 'var(--text)', fontWeight: 500 }}>
                       {r.port_name ?? r.port_id}
                     </td>
+                    <td style={{ padding: '8px 12px', color: 'var(--text-dim)', fontSize: 11 }}>
+                      {r.device_name ?? r.device_ip ?? '—'}
+                    </td>
                     <td style={{ padding: '8px 12px' }}>
                       <span style={{ display: 'flex', alignItems: 'center', gap: 4, color: 'var(--green)' }}>
                         <ArrowDown size={10} />
-                        {bps(r.rx_bps)}
+                        {bps(r.rx_bytes_rate)}
                       </span>
                     </td>
                     <td style={{ padding: '8px 12px' }}>
                       <span style={{ display: 'flex', alignItems: 'center', gap: 4, color: 'var(--accent)' }}>
                         <ArrowUp size={10} />
-                        {bps(r.tx_bps)}
+                        {bps(r.tx_bytes_rate)}
                       </span>
                     </td>
                     <td style={{ padding: '8px 12px' }}>
-                      {hasErr ? (
-                        <span style={{ color: 'var(--amber)', fontWeight: 600 }}>
-                          {r.rx_errors + r.tx_errors}
-                        </span>
+                      {errors > 0 ? (
+                        <span style={{ color: 'var(--amber)', fontWeight: 600 }}>{errors}</span>
                       ) : (
                         <span style={{ color: 'var(--text-dim)' }}>0</span>
                       )}
                     </td>
-                    <td style={{ padding: '8px 12px', color: 'var(--text-dim)' }}>
-                      {r.link_speed != null ? `${r.link_speed} Mbps` : '—'}
+                    <td style={{ padding: '8px 12px', fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: statusColour(r.status) }}>
+                      {r.status}
                     </td>
                   </tr>
                 )

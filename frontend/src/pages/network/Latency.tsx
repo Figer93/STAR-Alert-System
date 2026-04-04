@@ -1,35 +1,32 @@
 import { useEffect, useState } from 'react'
 import { Activity } from 'lucide-react'
 
-interface Bucket {
-  bucket:      string
-  target_name: string
-  avg_ms:      number
-  max_ms:      number
-  min_ms:      number
-  loss_pct:    number
-}
-
-interface LatencyData {
-  period:  string
-  buckets: Bucket[]
+interface LatencyResponse {
+  targets: string[]
+  series:  Record<string, number | string | null>[]
 }
 
 const PERIODS = [
+  { label: '15 m', value: '15m' },
   { label: '1 h',  value: '1h'  },
   { label: '6 h',  value: '6h'  },
   { label: '24 h', value: '24h' },
 ]
 
-function colour(ms: number): string {
-  if (ms < 20)  return 'var(--green)'
-  if (ms < 80)  return 'var(--amber)'
+function sanitise(name: string): string {
+  return name.replace(/[^a-zA-Z0-9_]/g, '_')
+}
+
+function colour(ms: number | null | undefined): string {
+  if (ms == null) return 'var(--text-dim)'
+  if (ms < 20)   return 'var(--green)'
+  if (ms < 80)   return 'var(--amber)'
   return 'var(--red)'
 }
 
 export default function NetworkLatency() {
   const [period, setPeriod]   = useState('1h')
-  const [data, setData]       = useState<LatencyData | null>(null)
+  const [data, setData]       = useState<LatencyResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState(false)
 
@@ -53,15 +50,27 @@ export default function NetworkLatency() {
     return () => { cancelled = true; clearInterval(id) }
   }, [period])
 
-  // Group by target
-  const targets = data
-    ? Array.from(new Set(data.buckets.map(b => b.target_name)))
-    : []
+  const targets = data?.targets ?? []
+  const series  = data?.series  ?? []
 
-  const latest = (target: string): Bucket | undefined =>
-    data?.buckets
-      .filter(b => b.target_name === target)
-      .sort((a, b) => b.bucket.localeCompare(a.bucket))[0]
+  // Latest value per target (last entry in series)
+  const latest = (target: string) => {
+    const key = sanitise(target)
+    for (let i = series.length - 1; i >= 0; i--) {
+      const v = series[i][`${key}_rtt`]
+      if (v != null) return v as number
+    }
+    return null
+  }
+
+  const latestLoss = (target: string) => {
+    const key = sanitise(target)
+    for (let i = series.length - 1; i >= 0; i--) {
+      const v = series[i][`${key}_loss`]
+      if (v != null) return v as number
+    }
+    return null
+  }
 
   return (
     <div style={{ padding: 16, height: '100%', overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -115,7 +124,7 @@ export default function NetworkLatency() {
         </div>
       )}
 
-      {(error || (!loading && !data?.buckets.length)) && (
+      {(error || (!loading && !targets.length)) && (
         <div className="card" style={{ padding: 40, textAlign: 'center' }}>
           <Activity size={36} color="var(--text-dim)" strokeWidth={1} style={{ marginBottom: 12 }} />
           <p style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 4 }}>
@@ -132,8 +141,9 @@ export default function NetworkLatency() {
           {/* Summary cards */}
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', flexShrink: 0 }}>
             {targets.map(target => {
-              const row = latest(target)
-              const col = row ? colour(row.avg_ms) : 'var(--text-dim)'
+              const rtt  = latest(target)
+              const loss = latestLoss(target)
+              const col  = colour(rtt)
               return (
                 <div key={target} className="card" style={{ padding: '14px 18px', flex: '1 1 160px' }}>
                   <p style={{
@@ -142,17 +152,14 @@ export default function NetworkLatency() {
                   }}>
                     {target}
                   </p>
-                  {row ? (
+                  {rtt != null ? (
                     <>
                       <p style={{ fontSize: 22, fontWeight: 700, color: col, margin: '0 0 2px', lineHeight: 1 }}>
-                        {row.avg_ms.toFixed(1)} ms
+                        {rtt.toFixed(1)} ms
                       </p>
-                      <p style={{ fontSize: 11, color: 'var(--text-dim)', margin: '0 0 2px' }}>
-                        min {row.min_ms.toFixed(1)} / max {row.max_ms.toFixed(1)}
-                      </p>
-                      {row.loss_pct > 0 && (
+                      {loss != null && loss > 0 && (
                         <p style={{ fontSize: 11, color: 'var(--red)', margin: 0, fontWeight: 600 }}>
-                          {row.loss_pct.toFixed(1)}% loss
+                          {loss.toFixed(1)}% loss
                         </p>
                       )}
                     </>
@@ -164,52 +171,55 @@ export default function NetworkLatency() {
             })}
           </div>
 
-          {/* Data table */}
-          <div className="card" style={{ overflow: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-              <thead>
-                <tr style={{ borderBottom: '1px solid var(--border)' }}>
-                  {['Time', 'Target', 'Avg', 'Min', 'Max', 'Loss'].map(h => (
-                    <th key={h} style={{
-                      padding: '8px 12px', textAlign: 'left',
-                      fontSize: 10, fontWeight: 700, letterSpacing: '0.06em',
-                      color: 'var(--text-dim)', textTransform: 'uppercase',
-                    }}>
-                      {h}
+          {/* Series table */}
+          {series.length > 0 && (
+            <div className="card" style={{ overflow: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid var(--border)' }}>
+                    <th style={{ padding: '8px 12px', textAlign: 'left', fontSize: 10, fontWeight: 700, letterSpacing: '0.06em', color: 'var(--text-dim)', textTransform: 'uppercase' }}>
+                      Time
                     </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {data!.buckets
-                  .slice()
-                  .sort((a, b) => b.bucket.localeCompare(a.bucket))
-                  .slice(0, 100)
-                  .map((row, i) => (
+                    {targets.map(t => (
+                      <th key={t} style={{ padding: '8px 12px', textAlign: 'left', fontSize: 10, fontWeight: 700, letterSpacing: '0.06em', color: 'var(--text-dim)', textTransform: 'uppercase' }}>
+                        {t}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {series.slice().reverse().slice(0, 60).map((row, i) => (
                     <tr key={i} style={{ borderBottom: '1px solid var(--border-dim)' }}>
                       <td style={{ padding: '7px 12px', color: 'var(--text-dim)', fontFamily: 'monospace', fontSize: 11 }}>
-                        {new Date(row.bucket).toLocaleTimeString()}
+                        {new Date(row.time as string).toLocaleTimeString()}
                       </td>
-                      <td style={{ padding: '7px 12px', color: 'var(--text)', fontWeight: 500 }}>
-                        {row.target_name}
-                      </td>
-                      <td style={{ padding: '7px 12px', color: colour(row.avg_ms), fontWeight: 600 }}>
-                        {row.avg_ms.toFixed(1)} ms
-                      </td>
-                      <td style={{ padding: '7px 12px', color: 'var(--text-dim)' }}>
-                        {row.min_ms.toFixed(1)} ms
-                      </td>
-                      <td style={{ padding: '7px 12px', color: 'var(--text-dim)' }}>
-                        {row.max_ms.toFixed(1)} ms
-                      </td>
-                      <td style={{ padding: '7px 12px', color: row.loss_pct > 0 ? 'var(--red)' : 'var(--text-dim)' }}>
-                        {row.loss_pct.toFixed(1)}%
-                      </td>
+                      {targets.map(t => {
+                        const key = sanitise(t)
+                        const rtt  = row[`${key}_rtt`]  as number | null
+                        const loss = row[`${key}_loss`] as number | null
+                        return (
+                          <td key={t} style={{ padding: '7px 12px' }}>
+                            {rtt != null ? (
+                              <span style={{ color: colour(rtt), fontWeight: 600 }}>
+                                {rtt.toFixed(1)} ms
+                                {loss != null && loss > 0 && (
+                                  <span style={{ color: 'var(--red)', marginLeft: 4, fontSize: 10 }}>
+                                    {loss.toFixed(1)}%↓
+                                  </span>
+                                )}
+                              </span>
+                            ) : (
+                              <span style={{ color: 'var(--text-dim)' }}>—</span>
+                            )}
+                          </td>
+                        )
+                      })}
                     </tr>
                   ))}
-              </tbody>
-            </table>
-          </div>
+                </tbody>
+              </table>
+            </div>
+          )}
         </>
       )}
     </div>
