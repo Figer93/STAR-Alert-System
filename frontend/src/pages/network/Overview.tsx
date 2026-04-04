@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Globe, Wifi, Server, AlertTriangle, Activity, Clock } from 'lucide-react'
+import { Globe, Activity, Clock } from 'lucide-react'
 
 interface Overview {
   wan:            { status: string; latency_ms: number | null; packet_loss_pct: number | null }

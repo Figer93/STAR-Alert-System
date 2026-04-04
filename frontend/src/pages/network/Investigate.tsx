@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Search, AlertTriangle, CheckCircle, Clock, ChevronRight } from 'lucide-react'
+import { Search, AlertTriangle, CheckCircle, Clock } from 'lucide-react'
 
 interface Incident {
   id:               string
