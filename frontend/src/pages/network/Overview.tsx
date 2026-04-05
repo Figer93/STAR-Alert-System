@@ -432,7 +432,7 @@ export default function NetworkOverview() {
       {/* ── Collector / Cloud banner ──────────────────────────────────────────── */}
       {overview && !overview.collector.online && (() => {
         const cloud = overview.unifi_cloud
-        const cloudOk = cloud?.connected && cloud.controller_state === 'connected'
+        const cloudOk = (cloud?.site_stats?.total_devices ?? 0) > 0
 
         if (cloudOk) {
           // Cloud is connected — show informational banner instead of warning
@@ -449,7 +449,7 @@ export default function NetworkOverview() {
               <Cloud size={14} color="var(--blue)" />
               <span style={{ fontSize: 12, color: 'var(--blue)', fontWeight: 500 }}>
                 ☁️ UniFi Cloud connected
-                {cloud.controller_version ? ` · v${cloud.controller_version}` : ''}
+                {cloud?.controller_version ? ` · v${cloud.controller_version}` : ''}
                 {' '}— showing cloud stats. Start the collector for full monitoring (latency, flows, port errors).
               </span>
             </motion.div>
@@ -506,11 +506,13 @@ export default function NetworkOverview() {
             {/* Internal */}
             {(() => {
               const cloud      = overview.unifi_cloud
-              const cloudOk    = !overview.collector.online && cloud?.connected && cloud.controller_state === 'connected' && !!cloud.site_stats
+              const cloudOk    = !overview.collector.online && (cloud?.site_stats?.total_devices ?? 0) > 0
               const cloudStats = cloudOk ? cloud!.site_stats! : null
 
-              // Derive display values
-              const deviceCount  = cloudStats ? cloudStats.online_devices : overview.internal.active_devices
+              // Derive display values — online = total minus offline
+              const deviceCount  = cloudStats
+                ? cloudStats.total_devices - cloudStats.offline_devices
+                : overview.internal.active_devices
               const offlineCount = cloudStats ? cloudStats.offline_devices : null
               const wiredClients = cloudStats ? cloudStats.wired_clients   : null
               const wifiClients  = cloudStats ? cloudStats.wifi_clients    : null

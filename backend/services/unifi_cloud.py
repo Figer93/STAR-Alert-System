@@ -175,8 +175,15 @@ class UniFiCloudService:
             "critical_notifications": site.get("critical_notifications", 0),
         }
 
+        # controller_state reflects whether the hardware gateway has an active
+        # cloud tunnel — it can be "disconnected" even when the API is fully
+        # functional and returning real device/client data.  Use the presence of
+        # real device data as the authoritative "are we connected?" signal.
+        api_has_data = int(site_stats.get("total_devices") or 0) > 0
+        connected    = api_has_data or host.get("state") == "connected"
+
         return {
-            "connected":          host.get("state") == "connected",
+            "connected":          connected,
             "controller_version": host.get("controller_version"),
             "controller_state":   host.get("state", "disconnected"),
             "last_seen":          host.get("last_connection_change"),
