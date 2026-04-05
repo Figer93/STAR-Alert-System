@@ -73,28 +73,59 @@ def _get(session: requests.Session, path: str) -> list[dict]:
 
 # ── Switch port parsing ───────────────────────────────────────────────────────
 
-def _parse_switch_ports(devices: list[dict], now: str) -> list[dict]:
+def _build_port_map(stations: list[dict]) -> dict[tuple, dict]:
+    """
+    Build a (switch_mac, port_idx) → {device_name, device_ip} lookup from the
+    connected-client list.  UniFi includes sw_mac / sw_port on wired clients,
+    which is the only reliable way to know which device is on which port.
+    """
+    port_map: dict[tuple, dict] = {}
+    for client in stations:
+        sw_port = client.get("sw_port")
+        sw_mac  = client.get("sw_mac", "").lower()
+        if not sw_port or not sw_mac:
+            continue
+        name = (
+            client.get("hostname")
+            or client.get("name")
+            or client.get("mac", "")
+        )
+        ip = client.get("ip", "").split("/")[0]  # strip /32 CIDR suffix if present
+        port_map[(sw_mac, int(sw_port))] = {"device_name": name, "device_ip": ip or None}
+    return port_map
+
+
+def _parse_switch_ports(
+    devices: list[dict],
+    stations: list[dict],
+    now: str,
+) -> list[dict]:
     """
     Extract per-port metrics from USW (UniFi Switch) devices.
+    Uses the connected-client list to resolve device_name and device_ip per port.
     Returns rows ready for switch_port_metrics insert.
     """
+    port_map = _build_port_map(stations)
     rows = []
     for device in devices:
         if device.get("type") != "usw":
             continue
 
-        switch_id   = device.get("mac", "")
+        switch_id   = device.get("mac", "").lower()
         switch_name = device.get("name") or device.get("model", switch_id)
 
         for port in device.get("port_table", []):
+            port_idx    = port.get("port_idx")
+            client_info = port_map.get((switch_id, int(port_idx or 0)), {})
+            port_label  = port.get("name", "") or f"Port {port_idx}"
             rows.append({
                 "time":        now,
                 "switch_id":   switch_id,
                 "switch_name": switch_name,
-                "port_id":     port.get("port_idx"),
-                "port_name":   port.get("name", ""),
-                "device_name": port.get("name", ""),
-                "device_ip":   None,
+                "port_id":     port_idx,
+                "port_name":   port_label,
+                "device_name": client_info.get("device_name") or port_label,
+                "device_ip":   client_info.get("device_ip"),
                 "rx_bytes":    port.get("rx_bytes"),
                 "tx_bytes":    port.get("tx_bytes"),
                 "rx_errors":   port.get("rx_errors"),
@@ -117,16 +148,21 @@ def _parse_clients(stations: list[dict]) -> list[dict]:
     rows = []
     for sta in stations:
         mac = sta.get("mac", "").lower()
-        if not mac:
+        ip  = sta.get("ip", "").strip()
+        if not mac or not ip:
             continue
 
+        sw_mac  = sta.get("sw_mac", "").lower() or None
+        sw_port = sta.get("sw_port")
         rows.append({
             "mac":         mac,
-            "ip":          sta.get("ip", ""),
+            "ip":          ip,
             "hostname":    sta.get("hostname") or sta.get("name") or "",
-            "device_type": "wireless",
+            "device_type": "unknown",
             "is_online":   True,
             "last_seen":   datetime.now(timezone.utc).isoformat(),
+            "switch_id":   sw_mac,
+            "port_id":     str(sw_port) if sw_port else None,
         })
     return rows
 
@@ -148,7 +184,7 @@ def _upsert_clients(client: Client, rows: list[dict]) -> None:
         return
     try:
         client.table("device_registry").upsert(
-            rows, on_conflict="mac"
+            rows, on_conflict="ip"
         ).execute()
         log.info("Upserted %d client rows into device_registry", len(rows))
     except Exception as exc:
@@ -171,13 +207,15 @@ def main() -> None:
 
             now = datetime.now(timezone.utc).isoformat()
 
-            # Switch port stats
-            devices   = _get(session, "stat/device")
-            port_rows = _parse_switch_ports(devices, now)
+            # Fetch both endpoints; stations are needed for port→device mapping
+            devices  = _get(session, "stat/device")
+            stations = _get(session, "stat/sta")
+
+            # Switch port stats (uses station list to resolve device_name/device_ip)
+            port_rows = _parse_switch_ports(devices, stations, now)
             _write_port_metrics(supabase, port_rows)
 
-            # Connected clients
-            stations    = _get(session, "stat/sta")
+            # Connected clients → device_registry upsert
             client_rows = _parse_clients(stations)
             _upsert_clients(supabase, client_rows)
 

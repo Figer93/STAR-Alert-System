@@ -15,6 +15,7 @@ interface DeviceRow {
   mac:         string | null
   hostname:    string | null
   switch_id:   string | null
+  switch_name: string | null
   port_id:     string | null
   last_seen:   string | null
   first_seen:  string | null
@@ -750,6 +751,7 @@ export default function Devices() {
   ]
 
   return (
+    <div style={{ height: '100%', overflowY: 'auto' }}>
     <div style={{ padding: '28px 32px', maxWidth: 1200, margin: '0 auto' }}>
 
       {/* Page header */}
@@ -1004,7 +1006,9 @@ export default function Devices() {
 
                       {/* Switch/Port */}
                       <td style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)', fontSize: 13, color: 'var(--text-muted)' }}>
-                        {d.switch_id && d.port_id ? `${d.switch_id} / ${d.port_id}` : d.switch_id ?? '--'}
+                        {d.switch_id
+                          ? `${d.switch_name ?? d.switch_id} / Port ${d.port_id ?? '--'}`
+                          : '--'}
                       </td>
 
                       {/* Type */}
@@ -1112,6 +1116,7 @@ export default function Devices() {
           />
         )}
       </AnimatePresence>
+    </div>
     </div>
   )
 }

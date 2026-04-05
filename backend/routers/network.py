@@ -160,6 +160,8 @@ class PortStatus(BaseModel):
     tx_errors_1h: int
     status: Literal["healthy", "warning", "error", "empty", "uplink"]
     last_error_time: Optional[datetime]
+    errors_24h: list[dict[str, Any]] = []
+    throughput_1h: list[dict[str, Any]] = []
 
 
 class FlowRow(BaseModel):
@@ -248,6 +250,7 @@ class DeviceRow(BaseModel):
     mac: Optional[str]
     hostname: Optional[str]
     switch_id: Optional[str]
+    switch_name: Optional[str]
     port_id: Optional[str]
     last_seen: Optional[datetime]
     first_seen: Optional[datetime]
@@ -862,6 +865,67 @@ async def get_ports(
         ORDER BY l.switch_id, l.port_id
     """, params)
 
+    # ── Error history (24 h, hourly buckets) ──────────────────────────────────
+    err_rows = await _exec(db, f"""
+        SELECT switch_id, port_id::text AS port_id,
+               date_trunc('hour', time) AS bucket,
+               SUM(rx_errors)           AS rx_errors,
+               SUM(tx_errors)           AS tx_errors
+        FROM switch_port_metrics
+        WHERE time > NOW() - INTERVAL '24 hours'
+          {switch_filter}
+        GROUP BY switch_id, port_id, bucket
+        ORDER BY switch_id, port_id, bucket
+    """, params)
+
+    err_map: dict[tuple, list] = {}
+    for er in err_rows:
+        key = (er["switch_id"], str(er["port_id"]))
+        bucket_t = er.get("bucket")
+        bucket_s = bucket_t.isoformat() if isinstance(bucket_t, datetime) else str(bucket_t)
+        err_map.setdefault(key, []).append({
+            "time":      bucket_s,
+            "rx_errors": int(er.get("rx_errors") or 0),
+            "tx_errors": int(er.get("tx_errors") or 0),
+        })
+
+    # ── Throughput history (1 h, rate between readings) ────────────────────────
+    tput_rows = await _exec(db, f"""
+        SELECT switch_id, port_id::text AS port_id, time,
+               CASE
+                   WHEN prev_rx IS NOT NULL AND rx_bytes >= prev_rx AND elapsed > 0
+                   THEN (rx_bytes - prev_rx)::float / elapsed
+               END AS rx_bytes_rate,
+               CASE
+                   WHEN prev_tx IS NOT NULL AND tx_bytes >= prev_tx AND elapsed > 0
+                   THEN (tx_bytes - prev_tx)::float / elapsed
+               END AS tx_bytes_rate
+        FROM (
+            SELECT switch_id, port_id, time, rx_bytes, tx_bytes,
+                   LAG(rx_bytes) OVER (PARTITION BY switch_id, port_id ORDER BY time) AS prev_rx,
+                   LAG(tx_bytes) OVER (PARTITION BY switch_id, port_id ORDER BY time) AS prev_tx,
+                   EXTRACT(EPOCH FROM (
+                       time - LAG(time) OVER (PARTITION BY switch_id, port_id ORDER BY time)
+                   )) AS elapsed
+            FROM switch_port_metrics
+            WHERE time > NOW() - INTERVAL '1 hour'
+              {switch_filter}
+        ) sub
+        WHERE prev_rx IS NOT NULL
+        ORDER BY switch_id, port_id, time
+    """, params)
+
+    tput_map: dict[tuple, list] = {}
+    for tp in tput_rows:
+        key = (tp["switch_id"], str(tp["port_id"]))
+        t = tp.get("time")
+        tput_map.setdefault(key, []).append({
+            "time":          t.isoformat() if isinstance(t, datetime) else str(t),
+            "rx_bytes_rate": round(float(tp.get("rx_bytes_rate") or 0), 2),
+            "tx_bytes_rate": round(float(tp.get("tx_bytes_rate") or 0), 2),
+        })
+
+    # ── Build result ───────────────────────────────────────────────────────────
     result = []
     for row in rows:
         st = _port_status(row)
@@ -872,6 +936,7 @@ async def get_ports(
         if status == "offline"      and row.get("device_name"):
             continue
 
+        key = (row["switch_id"], str(row["port_id"]))
         result.append(PortStatus(
             switch_id=row["switch_id"],
             switch_name=row.get("switch_name"),
@@ -885,6 +950,8 @@ async def get_ports(
             tx_errors_1h=int(row.get("tx_errors_1h") or 0),
             status=st,
             last_error_time=row.get("last_error_time"),
+            errors_24h=err_map.get(key, []),
+            throughput_1h=tput_map.get(key, []),
         ))
 
     return result
@@ -968,11 +1035,22 @@ async def get_flows(
 
 @router.get("/devices", response_model=list[DeviceRow])
 async def list_devices(db: AsyncSession = Depends(get_db)):
-    """List all known devices from device_registry, newest first."""
-    rows = await _exec(db,
-        "SELECT ip::text AS ip, mac, hostname, switch_id, port_id, "
-        "last_seen, first_seen, is_online, device_type, notes "
-        "FROM device_registry ORDER BY last_seen DESC NULLS LAST")
+    """List all known devices from device_registry, newest first.
+    Joins with switch_port_metrics to resolve switch_name from the switch MAC."""
+    rows = await _exec(db, """
+        SELECT
+            d.ip::text AS ip, d.mac, d.hostname, d.switch_id,
+            spm.switch_name,
+            d.port_id, d.last_seen, d.first_seen, d.is_online,
+            d.device_type, d.notes
+        FROM device_registry d
+        LEFT JOIN (
+            SELECT DISTINCT ON (switch_id) switch_id, switch_name
+            FROM switch_port_metrics
+            ORDER BY switch_id, time DESC
+        ) spm ON spm.switch_id = d.switch_id
+        ORDER BY d.last_seen DESC NULLS LAST
+    """)
     return [DeviceRow(**r) for r in rows]
 
 
@@ -1068,7 +1146,7 @@ async def get_device(ip: str, db: AsyncSession = Depends(get_db)):
         LIMIT 20
     """, {"ip": ip})
 
-    # Port errors last 24h (time series for sparkline)
+    # Port errors last 24h — try time_bucket first, fall back to date_trunc
     port_errors_24h = await _exec(db, """
         SELECT time_bucket('1 hour', time) AS bucket,
                SUM(rx_errors) AS rx_errors,
@@ -1076,11 +1154,20 @@ async def get_device(ip: str, db: AsyncSession = Depends(get_db)):
         FROM switch_port_metrics
         WHERE device_ip::text = :ip
           AND time > NOW() - INTERVAL '24 hours'
-        GROUP BY bucket
-        ORDER BY bucket ASC
+        GROUP BY bucket ORDER BY bucket ASC
     """, {"ip": ip})
+    if not port_errors_24h:
+        port_errors_24h = await _exec(db, """
+            SELECT date_trunc('hour', time) AS bucket,
+                   SUM(rx_errors) AS rx_errors,
+                   SUM(tx_errors) AS tx_errors
+            FROM switch_port_metrics
+            WHERE device_ip::text = :ip
+              AND time > NOW() - INTERVAL '24 hours'
+            GROUP BY bucket ORDER BY bucket ASC
+        """, {"ip": ip})
 
-    # Latency to gateway last 24h
+    # Latency to device last 24h — try time_bucket first, fall back to date_trunc
     latency_24h = await _exec(db, """
         SELECT time_bucket('15 minutes', time) AS bucket,
                AVG(rtt_ms) AS avg_rtt,
@@ -1088,9 +1175,18 @@ async def get_device(ip: str, db: AsyncSession = Depends(get_db)):
         FROM latency_metrics
         WHERE target_ip::text = :ip
           AND time > NOW() - INTERVAL '24 hours'
-        GROUP BY bucket
-        ORDER BY bucket ASC
+        GROUP BY bucket ORDER BY bucket ASC
     """, {"ip": ip})
+    if not latency_24h:
+        latency_24h = await _exec(db, """
+            SELECT date_trunc('minute', time) AS bucket,
+                   AVG(rtt_ms) AS avg_rtt,
+                   AVG(packet_loss_pct) AS avg_loss
+            FROM latency_metrics
+            WHERE target_ip::text = :ip
+              AND time > NOW() - INTERVAL '24 hours'
+            GROUP BY bucket ORDER BY bucket ASC
+        """, {"ip": ip})
 
     # Related incidents
     incidents = await _exec(db,

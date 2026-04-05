@@ -6,7 +6,7 @@ import {
   Server, Monitor, Wifi as WifiIcon, Router, HardDrive, Download,
 } from 'lucide-react'
 import {
-  BarChart, Bar, XAxis, YAxis,
+  BarChart, Bar, AreaChart, Area, XAxis, YAxis,
   Tooltip as ReTooltip, ResponsiveContainer,
 } from 'recharts'
 
@@ -25,6 +25,8 @@ interface PortStatus {
   tx_errors_1h:    number
   status:          'healthy' | 'warning' | 'error' | 'empty' | 'uplink'
   last_error_time: string | null
+  errors_24h:      Array<{ time: string; rx_errors: number; tx_errors: number }>
+  throughput_1h:   Array<{ time: string; rx_bytes_rate: number; tx_bytes_rate: number }>
 }
 
 interface DeviceDetail {
@@ -272,7 +274,16 @@ function PortDetailPanel({
   const navigate   = useNavigate()
   const p          = livePort ?? port
   const totalErrors = p.rx_errors_1h + p.tx_errors_1h
-  const errors24h   = device?.port_errors_24h ?? []
+  const errors24h   = (p.errors_24h ?? []).map(b => ({
+    time:      new Date(b.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    rx_errors: b.rx_errors,
+    tx_errors: b.tx_errors,
+  }))
+  const throughput1h = (p.throughput_1h ?? []).map(b => ({
+    time:    new Date(b.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    rx_bps:  b.rx_bytes_rate,
+    tx_bps:  b.tx_bytes_rate,
+  }))
 
   return (
     <div
@@ -424,10 +435,38 @@ function PortDetailPanel({
           )}
         </div>
 
-        {/* Throughput chart — requires history endpoint */}
+        {/* Throughput chart */}
         <div>
           <SectionLabel>Throughput (1 h)</SectionLabel>
-          <EmptyChart label="Historical throughput requires collector" />
+          {throughput1h.length > 0 ? (
+            <div style={{ height: 100 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={throughput1h} margin={{ top: 2, right: 4, bottom: 0, left: -20 }}>
+                  <defs>
+                    <linearGradient id="rxGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%"  stopColor="#22c55e" stopOpacity={0.3} />
+                      <stop offset="95%" stopColor="#22c55e" stopOpacity={0} />
+                    </linearGradient>
+                    <linearGradient id="txGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%"  stopColor="#3b82f6" stopOpacity={0.3} />
+                      <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <XAxis dataKey="time" hide />
+                  <YAxis tick={{ fontSize: 9, fill: 'var(--text-dim)' }} tickFormatter={v => bps(v)} />
+                  <ReTooltip
+                    contentStyle={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', fontSize: 11, borderRadius: 6 }}
+                    formatter={(v: unknown, name: unknown) => [bps(Number(v)), name === 'rx_bps' ? 'RX' : 'TX'] as [string, string]}
+                    labelFormatter={(l: unknown) => String(l)}
+                  />
+                  <Area dataKey="rx_bps" stroke="#22c55e" strokeWidth={1.5} fill="url(#rxGrad)" dot={false} />
+                  <Area dataKey="tx_bps" stroke="#3b82f6" strokeWidth={1.5} fill="url(#txGrad)" dot={false} />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          ) : (
+            <EmptyChart label="No throughput data yet — data appears after 2+ polls" />
+          )}
         </div>
 
         {/* Investigate button */}
