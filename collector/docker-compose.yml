@@ -48,21 +48,36 @@ services:
     networks:
       - collector_net
 
-  # ── telegraf: polls UniFi controller + ping → Supabase ─────────────────────
+  # ── telegraf: ICMP ping → Supabase latency_metrics ────────────────────────
+  # UniFi polling is handled by the unifi_poller service below.
   telegraf:
     image: telegraf:latest
     restart: unless-stopped
+    cap_add:
+      - NET_RAW
     environment:
-      SUPABASE_DATABASE_URL: ${DATABASE_URL}
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_KEY: ${SUPABASE_KEY}
+      GATEWAY_IP: ${GATEWAY_IP}
+    volumes:
+      - ./telegraf/telegraf.conf:/etc/telegraf/telegraf.conf:ro
+    networks:
+      - collector_net
+
+  # ── unifi_poller: polls UniFi Controller → switch_port_metrics + device_registry
+  unifi_poller:
+    build: ./services/unifi_poller
+    restart: unless-stopped
+    environment:
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_KEY: ${SUPABASE_KEY}
       UNIFI_URL: ${UNIFI_URL}
       UNIFI_PORT: ${UNIFI_PORT:-8443}
       UNIFI_USER: ${UNIFI_USER}
       UNIFI_PASS: ${UNIFI_PASS}
       UNIFI_SITE: ${UNIFI_SITE:-default}
       UNIFI_VERIFY_SSL: ${UNIFI_VERIFY_SSL:-false}
-      GATEWAY_IP: ${GATEWAY_IP}
-    volumes:
-      - ./telegraf/telegraf.conf:/etc/telegraf/telegraf.conf:ro
+      POLL_INTERVAL: "60"
     networks:
       - collector_net
 

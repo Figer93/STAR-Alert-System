@@ -367,8 +367,8 @@ def _port_status(row: dict) -> str:
         return "uplink"
     if not row.get("device_name"):
         return "empty"
-    rx_err = row.get("rx_errors_1h") or 0
-    tx_err = row.get("tx_errors_1h") or 0
+    rx_err = int(row.get("rx_errors_1h") or 0)
+    tx_err = int(row.get("tx_errors_1h") or 0)
     if rx_err > 100 or tx_err > 100:
         return "error"
     if rx_err > 10 or tx_err > 10:
