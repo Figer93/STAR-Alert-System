@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.config import settings
 from backend.database import get_db
+from backend.services.unifi_cloud import UniFiCloudService
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/network", tags=["network"])
@@ -100,13 +101,32 @@ class CollectorStatus(BaseModel):
     sources: dict[str, Any]
 
 
+class UniFiCloudSiteStats(BaseModel):
+    total_devices:          int
+    online_devices:         int
+    offline_devices:        int
+    wired_clients:          int
+    wifi_clients:           int
+    critical_notifications: int
+
+
+class UniFiCloudStatus(BaseModel):
+    connected:          bool
+    controller_version: Optional[str]  = None
+    controller_state:   str            = "disconnected"
+    last_seen:          Optional[str]  = None
+    site_stats:         Optional[UniFiCloudSiteStats] = None
+    error:              Optional[str]  = None
+
+
 class NetworkOverview(BaseModel):
-    wan: WanStatus
-    internal: InternalStatus
-    collector: CollectorStatus
-    open_incidents: int
+    wan:             WanStatus
+    internal:        InternalStatus
+    collector:       CollectorStatus
+    open_incidents:  int
     bytes_last_hour: int
-    health_score: int
+    health_score:    int
+    unifi_cloud:     Optional[UniFiCloudStatus] = None
 
 
 class LatencyPoint(BaseModel):
@@ -507,6 +527,44 @@ def _compute_hypothesis(
     )
 
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _unifi_cloud_service() -> UniFiCloudService | None:
+    """Return a UniFiCloudService if UNIFI_CLOUD_API_KEY is configured."""
+    if not settings.UNIFI_CLOUD_API_KEY:
+        return None
+    return UniFiCloudService(
+        api_key=settings.UNIFI_CLOUD_API_KEY,
+        host_id=settings.UNIFI_HOST_ID,
+        site_id=settings.UNIFI_SITE_ID,
+    )
+
+
+async def _fetch_unifi_cloud() -> UniFiCloudStatus:
+    """
+    Fetch UniFi Cloud status.  Returns a UniFiCloudStatus whether the call
+    succeeds or fails — callers never need to handle exceptions from this.
+    """
+    svc = _unifi_cloud_service()
+    if svc is None:
+        return UniFiCloudStatus(connected=False, error="API key not configured")
+    try:
+        data = await svc.get_status()
+        return UniFiCloudStatus(
+            connected=bool(data.get("connected")),
+            controller_version=data.get("controller_version"),
+            controller_state=data.get("controller_state", "disconnected"),
+            last_seen=data.get("last_seen"),
+            site_stats=UniFiCloudSiteStats(**data["site_stats"]) if data.get("site_stats") else None,
+        )
+    except PermissionError:
+        logger.warning("UniFi Cloud API: authentication failed (invalid API key)")
+        return UniFiCloudStatus(connected=False, error="API key is invalid or expired")
+    except Exception as exc:
+        logger.warning("UniFi Cloud API unavailable: %s", exc)
+        return UniFiCloudStatus(connected=False, error="Unable to reach UniFi Cloud API")
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.get("/overview", response_model=NetworkOverview)
@@ -582,6 +640,9 @@ async def get_overview(db: AsyncSession = Depends(get_db)):
 
     has_data = bool(wan_rows and wan_rows[0]["avg_rtt"] is not None)
 
+    # ── UniFi Cloud status (non-blocking — failure yields connected=False) ────
+    unifi_cloud = await _fetch_unifi_cloud()
+
     return NetworkOverview(
         wan=WanStatus(
             status=_wan_status(wan_loss, wan_rtt),
@@ -610,7 +671,17 @@ async def get_overview(db: AsyncSession = Depends(get_db)):
             collector_online=collector_online,
             has_data=has_data,
         ),
+        unifi_cloud=unifi_cloud,
     )
+
+
+@router.get("/unifi-cloud-status", response_model=UniFiCloudStatus)
+async def get_unifi_cloud_status():
+    """
+    Standalone endpoint — returns the current UniFi Cloud connection state.
+    Useful for health checks and the CollectorStatus modal.
+    """
+    return await _fetch_unifi_cloud()
 
 
 @router.get("/latency", response_model=LatencyResponse)

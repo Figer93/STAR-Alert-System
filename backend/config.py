@@ -39,6 +39,12 @@ class Settings(BaseSettings):
     # Leave blank to omit links from notifications.
     STAR_URL: str = ""
 
+    # UniFi Cloud API (api.ui.com)
+    # Leave UNIFI_CLOUD_API_KEY blank to disable cloud polling.
+    UNIFI_CLOUD_API_KEY: str = ""
+    UNIFI_HOST_ID: str = "e70a1e78-a306-4df2-8e18-e212c14c7b5a:363267911"
+    UNIFI_SITE_ID: str = "6176ab9954495f16906692ce"
+
     @property
     def telegram_chat_id_list(self) -> List[str]:
         return [cid.strip() for cid in self.TELEGRAM_CHAT_IDS.split(",") if cid.strip()]

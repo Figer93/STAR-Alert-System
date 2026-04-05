@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import {
   Globe, Wifi, Server, AlertTriangle, Activity,
-  Clock, CheckCircle, ArrowRight, Zap,
+  Clock, CheckCircle, ArrowRight, Zap, Cloud,
 } from 'lucide-react'
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
@@ -12,6 +12,24 @@ import {
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+interface UniFiCloudSiteStats {
+  total_devices:          number
+  online_devices:         number
+  offline_devices:        number
+  wired_clients:          number
+  wifi_clients:           number
+  critical_notifications: number
+}
+
+interface UniFiCloudStatus {
+  connected:          boolean
+  controller_version: string | null
+  controller_state:   string
+  last_seen:          string | null
+  site_stats:         UniFiCloudSiteStats | null
+  error:              string | null
+}
+
 interface Overview {
   wan:             { status: string; latency_ms: number | null; packet_loss_pct: number | null }
   internal:        { status: string; active_devices: number; error_ports: number }
@@ -19,6 +37,7 @@ interface Overview {
   open_incidents:  number
   bytes_last_hour: number
   health_score:    number
+  unifi_cloud:     UniFiCloudStatus | null
 }
 
 interface LatencyResponse {
@@ -410,25 +429,53 @@ export default function NetworkOverview() {
         )}
       </div>
 
-      {/* ── Collector offline banner ──────────────────────────────────────────── */}
-      {overview && !overview.collector.online && (
-        <motion.div
-          initial={{ opacity: 0, y: -8 }}
-          animate={{ opacity: 1, y: 0 }}
-          style={{
-            padding: '10px 14px', borderRadius: 'var(--radius)',
-            background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)',
-            display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0,
-          }}
-        >
-          <AlertTriangle size={14} color="var(--amber)" />
-          <span style={{ fontSize: 12, color: 'var(--amber)', fontWeight: 500 }}>
-            Collector offline — last data received{' '}
-            {collectorOfflineMin != null ? `${collectorOfflineMin} minute${collectorOfflineMin !== 1 ? 's' : ''} ago` : 'unknown'}.
-            {' '}Network data may be stale. Start the collector to resume monitoring.
-          </span>
-        </motion.div>
-      )}
+      {/* ── Collector / Cloud banner ──────────────────────────────────────────── */}
+      {overview && !overview.collector.online && (() => {
+        const cloud = overview.unifi_cloud
+        const cloudOk = cloud?.connected && cloud.controller_state === 'connected'
+
+        if (cloudOk) {
+          // Cloud is connected — show informational banner instead of warning
+          return (
+            <motion.div
+              initial={{ opacity: 0, y: -8 }}
+              animate={{ opacity: 1, y: 0 }}
+              style={{
+                padding: '10px 14px', borderRadius: 'var(--radius)',
+                background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.3)',
+                display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0,
+              }}
+            >
+              <Cloud size={14} color="var(--blue)" />
+              <span style={{ fontSize: 12, color: 'var(--blue)', fontWeight: 500 }}>
+                ☁️ UniFi Cloud connected
+                {cloud.controller_version ? ` · v${cloud.controller_version}` : ''}
+                {' '}— showing cloud stats. Start the collector for full monitoring (latency, flows, port errors).
+              </span>
+            </motion.div>
+          )
+        }
+
+        // Collector offline and no cloud fallback
+        return (
+          <motion.div
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            style={{
+              padding: '10px 14px', borderRadius: 'var(--radius)',
+              background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)',
+              display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0,
+            }}
+          >
+            <AlertTriangle size={14} color="var(--amber)" />
+            <span style={{ fontSize: 12, color: 'var(--amber)', fontWeight: 500 }}>
+              Collector offline — last data received{' '}
+              {collectorOfflineMin != null ? `${collectorOfflineMin} minute${collectorOfflineMin !== 1 ? 's' : ''} ago` : 'unknown'}.
+              {' '}Network data may be stale. Start the collector to resume monitoring.
+            </span>
+          </motion.div>
+        )
+      })()}
 
       {/* ── Row 1: Status cards ───────────────────────────────────────────────── */}
       <div style={{ display: 'flex', gap: 10, flexShrink: 0, flexWrap: 'wrap' }}>
@@ -457,24 +504,51 @@ export default function NetworkOverview() {
             )}
 
             {/* Internal */}
-            {card(
-              <>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                  <StatusDot status={overview.internal.status} />
-                  <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-dim)' }}>Internal</span>
-                  <Server size={11} color={statusColour(overview.internal.status)} style={{ marginLeft: 'auto' }} />
-                </div>
-                <p className="mono" style={{ fontSize: 26, fontWeight: 700, color: 'var(--text-head)', margin: '0 0 2px', lineHeight: 1 }}>
-                  {overview.internal.active_devices}
-                </p>
-                <p style={{ fontSize: 11, color: overview.internal.error_ports > 0 ? 'var(--amber)' : 'var(--text-dim)', margin: 0 }}>
-                  {overview.internal.error_ports > 0
-                    ? `${overview.internal.error_ports} port${overview.internal.error_ports !== 1 ? 's' : ''} with errors`
-                    : 'No port errors'}
-                </p>
-              </>,
-              statusColour(overview.internal.status), 1,
-            )}
+            {(() => {
+              const cloud      = overview.unifi_cloud
+              const cloudOk    = !overview.collector.online && cloud?.connected && cloud.controller_state === 'connected' && !!cloud.site_stats
+              const cloudStats = cloudOk ? cloud!.site_stats! : null
+
+              // Derive display values
+              const deviceCount  = cloudStats ? cloudStats.online_devices : overview.internal.active_devices
+              const offlineCount = cloudStats ? cloudStats.offline_devices : null
+              const wiredClients = cloudStats ? cloudStats.wired_clients   : null
+              const wifiClients  = cloudStats ? cloudStats.wifi_clients    : null
+
+              const sub = overview.internal.error_ports > 0 && !cloudStats
+                ? `${overview.internal.error_ports} port${overview.internal.error_ports !== 1 ? 's' : ''} with errors`
+                : cloudStats
+                  ? `${offlineCount} offline · ${wiredClients} wired · ${wifiClients} wireless`
+                  : 'No port errors'
+
+              const subColour = overview.internal.error_ports > 0 && !cloudStats ? 'var(--amber)' : 'var(--text-dim)'
+
+              return card(
+                <>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                    <StatusDot status={overview.internal.status} />
+                    <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-dim)' }}>Internal</span>
+                    {cloudStats && (
+                      <span style={{
+                        marginLeft: 4,
+                        fontSize: 9, fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase',
+                        color: 'var(--blue)', background: 'rgba(59,130,246,0.12)',
+                        border: '1px solid rgba(59,130,246,0.3)',
+                        borderRadius: 3, padding: '1px 5px',
+                      }}>
+                        via Cloud API
+                      </span>
+                    )}
+                    <Server size={11} color={statusColour(overview.internal.status)} style={{ marginLeft: 'auto' }} />
+                  </div>
+                  <p className="mono" style={{ fontSize: 26, fontWeight: 700, color: 'var(--text-head)', margin: '0 0 2px', lineHeight: 1 }}>
+                    {deviceCount}
+                  </p>
+                  <p style={{ fontSize: 11, color: subColour, margin: 0 }}>{sub}</p>
+                </>,
+                statusColour(overview.internal.status), 1,
+              )
+            })()}
 
             {/* Gateway RTT + sparkline */}
             {card(
