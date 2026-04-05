@@ -58,16 +58,12 @@ interface IncidentRow {
   auto_detected:   boolean
 }
 
-interface FlowRow {
-  src_ip:           string | null
-  src_hostname:     string | null
-  dst_ip:           string | null
-  dst_hostname:     string | null
-  protocol_name:    string
-  bytes:            number
-  packets:          number
-  direction:        string | null
-  percent_of_total: number
+interface TopDeviceRow {
+  ip:          string
+  hostname:    string | null
+  rx_bytes:    number
+  tx_bytes:    number
+  total_bytes: number
 }
 
 // ─── Utility functions ───────────────────────────────────────────────────────
@@ -264,10 +260,10 @@ function Sparkline({ data, colour }: { data: number[]; colour: string }) {
 export default function NetworkOverview() {
   const navigate = useNavigate()
 
-  const [overview,  setOverview]  = useState<Overview | null>(null)
-  const [latency,   setLatency]   = useState<LatencyResponse | null>(null)
-  const [incidents, setIncidents] = useState<IncidentRow[]>([])
-  const [flows,     setFlows]     = useState<FlowRow[]>([])
+  const [overview,    setOverview]    = useState<Overview | null>(null)
+  const [latency,     setLatency]     = useState<LatencyResponse | null>(null)
+  const [incidents,   setIncidents]   = useState<IncidentRow[]>([])
+  const [topDevices,  setTopDevices]  = useState<TopDeviceRow[]>([])
 
   const [loading,      setLoading]      = useState(true)
   const [lastUpdated,  setLastUpdated]  = useState<Date | null>(null)
@@ -278,17 +274,17 @@ export default function NetworkOverview() {
   // Fetch all data in parallel
   const loadAll = useCallback(async () => {
     try {
-      const [ovRes, latRes, incRes, flRes] = await Promise.allSettled([
+      const [ovRes, latRes, incRes, tdRes] = await Promise.allSettled([
         fetch('/api/network/overview'),
         fetch('/api/network/latency?period=1h'),
         fetch('/api/network/incidents?status=all&limit=5'),
-        fetch('/api/network/flows?period=15m&limit=100'),
+        fetch('/api/network/top-devices?period=15m&limit=10'),
       ])
 
       if (ovRes.status  === 'fulfilled' && ovRes.value.ok)  setOverview(await ovRes.value.json())
       if (latRes.status === 'fulfilled' && latRes.value.ok) setLatency(await latRes.value.json())
       if (incRes.status === 'fulfilled' && incRes.value.ok) setIncidents(await incRes.value.json())
-      if (flRes.status  === 'fulfilled' && flRes.value.ok)  setFlows(await flRes.value.json())
+      if (tdRes.status  === 'fulfilled' && tdRes.value.ok)  setTopDevices(await tdRes.value.json())
 
       setLastUpdated(new Date())
       setSecondsSince(0)
@@ -340,23 +336,7 @@ export default function NetworkOverview() {
     return ci < bi ? i.severity : best
   }, null)
 
-  // Top devices from flows (aggregate by IP)
-  const deviceMap: Record<string, { hostname: string | null; sent: number; received: number }> = {}
-  for (const f of flows) {
-    if (f.src_ip) {
-      if (!deviceMap[f.src_ip]) deviceMap[f.src_ip] = { hostname: f.src_hostname, sent: 0, received: 0 }
-      deviceMap[f.src_ip].sent += f.bytes
-    }
-    if (f.dst_ip) {
-      if (!deviceMap[f.dst_ip]) deviceMap[f.dst_ip] = { hostname: f.dst_hostname, sent: 0, received: 0 }
-      deviceMap[f.dst_ip].received += f.bytes
-    }
-  }
-  const topDevices = Object.entries(deviceMap)
-    .map(([ip, d]) => ({ ip, ...d, total: d.sent + d.received }))
-    .sort((a, b) => b.total - a.total)
-    .slice(0, 10)
-  const maxDeviceBytes = topDevices[0]?.total ?? 1
+  const maxDeviceBytes = topDevices[0]?.total_bytes ?? 1
 
   // Health gauge sub-scores
   const wanOk       = overview?.wan.status === 'healthy'
@@ -678,7 +658,7 @@ export default function NetworkOverview() {
             <Activity size={13} color="var(--text-dim)" />
           </div>
 
-          {loading && !flows.length ? (
+          {loading && !topDevices.length ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               {[1, 2, 3, 4].map(i => (
                 <div key={i} style={{ height: 36, background: 'rgba(255,255,255,0.02)', borderRadius: 6, animation: 'pulse 1.4s ease-in-out infinite' }} />
@@ -686,12 +666,12 @@ export default function NetworkOverview() {
             </div>
           ) : topDevices.length === 0 ? (
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 120 }}>
-              <p style={{ fontSize: 12, color: 'var(--text-dim)' }}>No flow data yet.</p>
+              <p style={{ fontSize: 12, color: 'var(--text-dim)' }}>No traffic data yet — start the collector to see devices.</p>
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {topDevices.map(d => {
-                const pct = d.total / maxDeviceBytes
+                const pct = d.total_bytes / maxDeviceBytes
                 const barColour = pct > 0.8 ? 'var(--red)' : pct > 0.5 ? 'var(--amber)' : 'var(--accent)'
                 return (
                   <div
@@ -704,7 +684,7 @@ export default function NetworkOverview() {
                         {d.hostname ?? d.ip}
                       </span>
                       <span style={{ fontSize: 10, color: 'var(--text-dim)', fontFamily: 'monospace' }}>
-                        {fmt(d.total)}
+                        {fmt(d.total_bytes)}
                       </span>
                     </div>
                     <div style={{ height: 3, borderRadius: 2, background: 'rgba(255,255,255,0.06)' }}>

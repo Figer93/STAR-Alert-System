@@ -176,6 +176,14 @@ class FlowRow(BaseModel):
     percent_of_total: float
 
 
+class TopDeviceRow(BaseModel):
+    ip: str
+    hostname: Optional[str]
+    rx_bytes: int
+    tx_bytes: int
+    total_bytes: int
+
+
 class DeviceDetail(BaseModel):
     ip: str
     mac: Optional[str]
@@ -696,6 +704,59 @@ async def get_unifi_cloud_status():
     return await _fetch_unifi_cloud()
 
 
+@router.get("/top-devices", response_model=list[TopDeviceRow])
+async def get_top_devices(
+    period: Literal["15m", "1h", "6h", "24h", "7d"] = Query("15m"),
+    limit: int = Query(10, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Top devices by switch port traffic volume in the given period.
+    Uses MAX-MIN delta per port to approximate bytes transferred from
+    cumulative counters — no dependency on NetFlow/pfSense.
+    """
+    if not _IS_POSTGRES:
+        return []
+
+    lookback = _PERIOD_CONFIG[period][0]
+    rows = await _exec(db, f"""
+        WITH port_deltas AS (
+            SELECT
+                device_ip,
+                switch_id,
+                port_id,
+                GREATEST(MAX(rx_bytes) - MIN(rx_bytes), 0) AS delta_rx,
+                GREATEST(MAX(tx_bytes) - MIN(tx_bytes), 0) AS delta_tx
+            FROM switch_port_metrics
+            WHERE time > NOW() - INTERVAL '{lookback}'
+              AND device_ip IS NOT NULL
+            GROUP BY device_ip, switch_id, port_id
+        )
+        SELECT
+            pd.device_ip::text  AS ip,
+            dr.hostname,
+            SUM(pd.delta_rx)    AS rx_bytes,
+            SUM(pd.delta_tx)    AS tx_bytes,
+            SUM(pd.delta_rx + pd.delta_tx) AS total_bytes
+        FROM port_deltas pd
+        LEFT JOIN device_registry dr ON dr.ip = pd.device_ip
+        GROUP BY pd.device_ip, dr.hostname
+        ORDER BY total_bytes DESC
+        LIMIT :limit
+    """, {"limit": limit})
+
+    return [
+        TopDeviceRow(
+            ip=r["ip"],
+            hostname=r.get("hostname"),
+            rx_bytes=int(r.get("rx_bytes") or 0),
+            tx_bytes=int(r.get("tx_bytes") or 0),
+            total_bytes=int(r.get("total_bytes") or 0),
+        )
+        for r in rows
+    ]
+
+
 @router.get("/latency", response_model=LatencyResponse)
 async def get_latency(
     period: Literal["15m", "1h", "6h", "24h", "7d"] = Query("1h"),
@@ -1202,7 +1263,9 @@ async def get_device(ip: str, db: AsyncSession = Depends(get_db)):
         for r in rows:
             d = {}
             for k, v in r.items():
-                d[k] = v.isoformat() if isinstance(v, datetime) else v
+                # Rename 'bucket' → 'time' so all chart data uses the same key
+                out_key = "time" if k == "bucket" else k
+                d[out_key] = v.isoformat() if isinstance(v, datetime) else v
             out.append(d)
         return out
 

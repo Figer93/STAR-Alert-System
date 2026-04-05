@@ -295,10 +295,11 @@ async def _check_interface_errors(db: AsyncSession) -> None:
     """Check 2: Ports with more than 50 RX errors in the last 5 minutes."""
     error_ports = await _exec(db, """
         SELECT switch_id, switch_name, port_id, port_name, device_name,
+               device_ip::text AS device_ip,
                SUM(rx_errors) AS total_rx_errors
         FROM switch_port_metrics
         WHERE time > NOW() - INTERVAL '5 minutes'
-        GROUP BY switch_id, switch_name, port_id, port_name, device_name
+        GROUP BY switch_id, switch_name, port_id, port_name, device_name, device_ip
         HAVING SUM(rx_errors) > :threshold
     """, {"threshold": _PORT_ERROR_THRESHOLD})
 
@@ -332,6 +333,7 @@ async def _check_interface_errors(db: AsyncSession) -> None:
                                     affected_switch=switch_id, affected_port=port_id):
             continue
 
+        device_ip = row.get("device_ip") or None
         await _create_incident(
             db,
             severity="medium",
@@ -341,6 +343,7 @@ async def _check_interface_errors(db: AsyncSession) -> None:
                 f"Port {port_id} on {switch_name} reported {rx_errors:,} RX errors "
                 f"in the last 5 minutes. Likely a cable or NIC fault."
             ),
+            affected_ip=device_ip,
             affected_switch=switch_id,
             affected_port=port_id,
             evidence={"rx_errors": rx_errors, "device_name": device_name},

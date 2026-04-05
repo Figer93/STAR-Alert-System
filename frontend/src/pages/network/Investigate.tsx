@@ -596,7 +596,7 @@ function MetricsPanel({ metrics, detail }: { metrics: InvestigateMetrics; detail
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
-          ) : noData('No flow data')}
+          ) : noData('Enable NetFlow on pfSense to see traffic destinations')}
         </ChartCard>
       </div>
     </div>
