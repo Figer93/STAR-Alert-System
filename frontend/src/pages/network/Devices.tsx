@@ -588,21 +588,22 @@ function DevicePanel({
           onClick={() => navigate(`/network/investigate?ip=${encodeURIComponent(ip)}`)}
           style={{
             width: '100%',
-            padding: '9px',
-            background: 'var(--bg-base)',
-            border: '1px solid var(--border)',
-            color: 'var(--text-primary)',
+            padding: '10px',
+            background: '#3b82f6',
+            border: '1px solid #3b82f6',
+            color: '#fff',
             borderRadius: 7,
             cursor: 'pointer',
             fontSize: 13,
-            fontWeight: 500,
+            fontWeight: 600,
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
             gap: 7,
+            boxShadow: '0 0 12px rgba(59,130,246,0.35)',
           }}
         >
-          <ExternalLink size={14} /> Investigate this device
+          <ExternalLink size={14} /> Investigate
         </button>
       </div>
     </motion.div>
@@ -835,26 +836,36 @@ export default function Devices() {
               <Download size={11} /> Export CSV
             </button>
           )}
-          {filterPills.map(p => (
-            <button
-              key={p.key}
-              onClick={() => setStatusFilter(p.key)}
-              style={{
-                padding: '6px 13px',
-                borderRadius: 20,
-                border: '1px solid',
-                borderColor: statusFilter === p.key ? 'var(--blue)' : 'var(--border)',
-                background: statusFilter === p.key ? 'rgba(59,130,246,0.12)' : 'var(--bg-surface)',
-                color: statusFilter === p.key ? 'var(--blue)' : 'var(--text-muted)',
-                fontSize: 12,
-                fontWeight: 500,
-                cursor: 'pointer',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {p.label}
-            </button>
-          ))}
+          {filterPills.map(pill => {
+            const active = statusFilter === pill.key
+            let borderColor = 'var(--border)'
+            let background  = 'var(--bg-surface)'
+            let color       = 'var(--text-muted)'
+            if (active) {
+              if (pill.key === 'online')  { borderColor = '#22c55e'; background = 'rgba(34,197,94,0.12)';   color = '#22c55e' }
+              else if (pill.key === 'offline') { borderColor = '#6b7280'; background = 'rgba(107,114,128,0.12)'; color = '#9ca3af' }
+              else { borderColor = 'var(--blue)'; background = 'rgba(59,130,246,0.12)'; color = 'var(--blue)' }
+            }
+            return (
+              <button
+                key={pill.key}
+                onClick={() => setStatusFilter(pill.key)}
+                style={{
+                  padding: '6px 13px',
+                  borderRadius: 20,
+                  border: `1px solid ${borderColor}`,
+                  background,
+                  color,
+                  fontSize: 12,
+                  fontWeight: 500,
+                  cursor: 'pointer',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {pill.label}
+              </button>
+            )
+          })}
         </div>
       </div>
 

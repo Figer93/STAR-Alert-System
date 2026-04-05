@@ -73,6 +73,14 @@ function portNum(p: PortStatus): number {
 
 type SortCol = 'port' | 'device' | 'ip' | 'rx' | 'tx' | 'errors' | 'status' | 'last_error'
 
+/** Returns null when device_name is just the port label (e.g. "Port 31"), meaning no
+ *  real device name has been resolved yet. Use this everywhere device_name is displayed. */
+function effectiveDeviceName(p: PortStatus): string | null {
+  if (!p.device_name) return null
+  if (p.device_name === p.port_name) return null
+  return p.device_name
+}
+
 function DeviceIcon({ type }: { type: string | null | undefined }) {
   const t = (type ?? '').toLowerCase()
   if (t === 'server')                     return <Server size={14} />
@@ -106,8 +114,8 @@ function PortTooltip({ port: p, x, y }: TooltipPos) {
       <p style={{ fontWeight: 700, color: 'var(--text-head)', margin: '0 0 4px' }}>
         {p.port_name ?? p.port_id}
       </p>
-      {p.device_name && (
-        <p style={{ color: 'var(--text)', margin: '0 0 2px' }}>{p.device_name}</p>
+      {effectiveDeviceName(p) && (
+        <p style={{ color: 'var(--text)', margin: '0 0 2px' }}>{effectiveDeviceName(p)}</p>
       )}
       {p.device_ip && (
         <p style={{ color: 'var(--text-dim)', fontFamily: 'monospace', fontSize: 11, margin: '0 0 6px' }}>
@@ -346,14 +354,14 @@ function PortDetailPanel({
           borderRadius: 'var(--radius)',
           padding:      '12px 14px',
         }}>
-          {p.device_name || p.device_ip ? (
+          {effectiveDeviceName(p) || p.device_ip ? (
             <>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
                 <span style={{ color: 'var(--accent)' }}>
                   <DeviceIcon type={device?.device_type} />
                 </span>
                 <span style={{ fontWeight: 600, color: 'var(--text-head)', fontSize: 13 }}>
-                  {device?.hostname ?? p.device_name ?? 'Unknown Device'}
+                  {device?.hostname ?? effectiveDeviceName(p) ?? 'Unknown Device'}
                 </span>
                 {device && (
                   <span style={{
@@ -879,7 +887,7 @@ export default function NetworkPorts() {
                         {p.port_name ?? p.port_id}
                       </td>
                       <td style={{ padding: '8px 12px', color: 'var(--text-dim)' }}>
-                        {p.device_name ?? '—'}
+                        {effectiveDeviceName(p) ?? '—'}
                       </td>
                       <td style={{ padding: '8px 12px', fontFamily: 'monospace', fontSize: 11, color: 'var(--text-dim)' }}>
                         {p.device_ip ?? '—'}

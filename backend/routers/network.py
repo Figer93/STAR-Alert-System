@@ -46,6 +46,15 @@ _PERIOD_CONFIG: dict[str, tuple[str, str]] = {
     "7d":  ("7 days",     "1 hour"),
 }
 
+# Fallback for standard PostgreSQL without TimescaleDB — maps period → date_trunc unit
+_PERIOD_DATE_TRUNC: dict[str, str] = {
+    "15m": "minute",
+    "1h":  "minute",
+    "6h":  "minute",
+    "24h": "hour",
+    "7d":  "hour",
+}
+
 # dst_port → human-readable protocol name
 _PORT_NAMES: dict[int, str] = {
     21:    "FTP",
@@ -724,6 +733,44 @@ async def get_latency(
         ORDER BY bucket ASC
     """
     rows = await _exec(db, sql, params)
+    logger.info("latency time_bucket query period=%s returned %d rows", period, len(rows))
+
+    if not rows:
+        # time_bucket() requires the TimescaleDB extension. Fall back to date_trunc()
+        # which works on standard Supabase PostgreSQL without TimescaleDB.
+        trunc_unit = _PERIOD_DATE_TRUNC[period]
+        sql_datetunc = f"""
+            SELECT
+                date_trunc('{trunc_unit}', time) AS bucket,
+                target_name,
+                AVG(rtt_ms)           AS avg_rtt,
+                AVG(packet_loss_pct)  AS avg_loss
+            FROM latency_metrics
+            WHERE time >= NOW() - INTERVAL '{lookback}'
+              {target_filter_sql}
+            GROUP BY bucket, target_name
+            ORDER BY bucket ASC
+        """
+        rows = await _exec(db, sql_datetunc, params)
+        logger.info("latency date_trunc('%s') fallback returned %d rows", trunc_unit, len(rows))
+
+    if not rows:
+        # No aggregated data yet (collector just started or table is empty).
+        # Return raw rows so the chart has something to display immediately.
+        sql_raw = f"""
+            SELECT
+                time                AS bucket,
+                target_name,
+                rtt_ms              AS avg_rtt,
+                packet_loss_pct     AS avg_loss
+            FROM latency_metrics
+            WHERE time >= NOW() - INTERVAL '{lookback}'
+              {target_filter_sql}
+            ORDER BY time ASC
+            LIMIT 500
+        """
+        rows = await _exec(db, sql_raw, params)
+        logger.info("latency raw fallback returned %d rows", len(rows))
 
     # Collect distinct target names in the result
     all_targets = sorted({r["target_name"] for r in rows if r.get("target_name")})
