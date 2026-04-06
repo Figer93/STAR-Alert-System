@@ -61,6 +61,7 @@ interface IncidentRow {
 interface TopDeviceRow {
   ip:          string
   hostname:    string | null
+  mac:         string | null
   rx_bytes:    number
   tx_bytes:    number
   total_bytes: number
@@ -70,6 +71,16 @@ interface TopDeviceRow {
 
 function sanitise(name: string): string {
   return name.replace(/[^a-zA-Z0-9_]/g, '_')
+}
+
+function deviceDisplayName(hostname: string | null, mac: string | null, ip: string): string {
+  if (hostname) return hostname
+  if (mac) {
+    const last6 = mac.replace(/[^a-fA-F0-9]/g, '').slice(-6)
+    const fmt6  = last6.match(/.{1,2}/g)?.join(':') ?? last6
+    return `Unknown (${fmt6.toLowerCase()})`
+  }
+  return ip
 }
 
 function fmt(bytes: number): string {
@@ -681,7 +692,7 @@ export default function NetworkOverview() {
                   >
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
                       <span style={{ fontSize: 11, fontWeight: 500, color: 'var(--text)' }}>
-                        {d.hostname ?? d.ip}
+                        {deviceDisplayName(d.hostname, d.mac, d.ip)}
                       </span>
                       <span style={{ fontSize: 10, color: 'var(--text-dim)', fontFamily: 'monospace' }}>
                         {fmt(d.total_bytes)}
@@ -696,9 +707,7 @@ export default function NetworkOverview() {
                         transition: 'width 0.3s ease',
                       }} />
                     </div>
-                    {d.hostname && (
-                      <p style={{ fontSize: 9, color: 'var(--text-dim)', margin: '2px 0 0', fontFamily: 'monospace' }}>{d.ip}</p>
-                    )}
+                    <p style={{ fontSize: 9, color: 'var(--text-dim)', margin: '2px 0 0', fontFamily: 'monospace' }}>{d.ip}</p>
                   </div>
                 )
               })}

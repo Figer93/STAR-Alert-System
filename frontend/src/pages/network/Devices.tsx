@@ -81,6 +81,16 @@ const EVENT_COLORS: Record<string, string> = {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+function displayName(hostname: string | null, mac: string | null): string {
+  if (hostname) return hostname
+  if (mac) {
+    const last6 = mac.replace(/[^a-fA-F0-9]/g, '').slice(-6)
+    const fmt   = last6.match(/.{1,2}/g)?.join(':') ?? last6
+    return `Unknown (${fmt.toLowerCase()})`
+  }
+  return 'Unknown'
+}
+
 function ago(iso: string | null): string {
   if (!iso) return 'Never'
   const diff = Date.now() - new Date(iso).getTime()
@@ -396,11 +406,9 @@ function DevicePanel({
           <StatusDot online={detail?.is_online ?? false} />
           <div>
             <div style={{ fontWeight: 600, fontSize: 15, color: 'var(--text-primary)' }}>
-              {detail?.hostname ?? ip}
+              {displayName(detail?.hostname ?? null, detail?.mac ?? null)}
             </div>
-            {detail?.hostname && (
-              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{ip}</div>
-            )}
+            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{ip}</div>
           </div>
         </div>
         <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 4 }}>
@@ -674,7 +682,7 @@ export default function Devices() {
     return [...filtered].sort((a, b) => {
       let cmp = 0
       switch (sort.col) {
-        case 'hostname':    cmp = (a.hostname ?? a.ip).localeCompare(b.hostname ?? b.ip); break
+        case 'hostname':    cmp = displayName(a.hostname, a.mac).localeCompare(displayName(b.hostname, b.mac)); break
         case 'ip':          cmp = a.ip.localeCompare(b.ip); break
         case 'is_online':   cmp = Number(b.is_online) - Number(a.is_online); break
         case 'device_type': cmp = (a.device_type ?? 'unknown').localeCompare(b.device_type ?? 'unknown'); break
@@ -989,14 +997,14 @@ export default function Devices() {
                             padding: 0, display: 'flex', alignItems: 'center', gap: 5,
                           }}
                         >
-                          {d.hostname ?? d.ip}
+                          {displayName(d.hostname, d.mac)}
                           <ExternalLink size={11} style={{ opacity: 0.6 }} />
                         </button>
                       </td>
 
                       {/* IP */}
                       <td style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)', fontFamily: 'monospace', fontSize: 13, color: 'var(--text-muted)' }}>
-                        {d.hostname ? d.ip : ''}
+                        {d.ip}
                       </td>
 
                       {/* MAC */}

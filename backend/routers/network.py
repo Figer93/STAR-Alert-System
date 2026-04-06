@@ -180,6 +180,7 @@ class FlowRow(BaseModel):
 class TopDeviceRow(BaseModel):
     ip: str
     hostname: Optional[str]
+    mac: Optional[str] = None
     rx_bytes: int
     tx_bytes: int
     total_bytes: int
@@ -732,16 +733,23 @@ async def get_top_devices(
             WHERE time > NOW() - INTERVAL '{lookback}'
               AND device_ip IS NOT NULL
             GROUP BY device_ip, switch_id, port_id
+        ),
+        infra_ips AS (
+            SELECT DISTINCT target_ip
+            FROM latency_metrics
+            WHERE target_type IN ('gateway', 'wan')
         )
         SELECT
             pd.device_ip::text  AS ip,
             dr.hostname,
+            dr.mac,
             SUM(pd.delta_rx)    AS rx_bytes,
             SUM(pd.delta_tx)    AS tx_bytes,
             SUM(pd.delta_rx + pd.delta_tx) AS total_bytes
         FROM port_deltas pd
         LEFT JOIN device_registry dr ON dr.ip = pd.device_ip
-        GROUP BY pd.device_ip, dr.hostname
+        WHERE pd.device_ip NOT IN (SELECT target_ip FROM infra_ips)
+        GROUP BY pd.device_ip, dr.hostname, dr.mac
         ORDER BY total_bytes DESC
         LIMIT :limit
     """, {"limit": limit})
@@ -750,6 +758,7 @@ async def get_top_devices(
         TopDeviceRow(
             ip=r["ip"],
             hostname=r.get("hostname"),
+            mac=r.get("mac"),
             rx_bytes=int(r.get("rx_bytes") or 0),
             tx_bytes=int(r.get("tx_bytes") or 0),
             total_bytes=int(r.get("total_bytes") or 0),
