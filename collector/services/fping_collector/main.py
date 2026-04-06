@@ -1,18 +1,16 @@
 """
-fping_collector — pings all targets every FPING_INTERVAL seconds and writes
+fping_collector — pings fixed targets every FPING_INTERVAL seconds and writes
 rtt_ms / packet_loss_pct to the Supabase latency_metrics table.
 
 Targets:
   - GATEWAY_IP    → category 'gateway'
   - ISP_GATEWAY_IP (optional) → category 'wan'
   - 8.8.8.8, 1.1.1.1  → category 'wan'
-  - All IPs from device_registry where is_online=true → category 'internal'
 
 fping output format parsed:
   192.168.1.1 : xmt/rcv/%loss = 3/3/0%, min/avg/max = 0.33/0.40/0.54
 """
 
-import ipaddress
 import logging
 import os
 import re
@@ -47,37 +45,8 @@ _FPING_RE = re.compile(
 )
 
 
-def _categorise(ip: str, gateway_ip: str, isp_ip: str) -> str:
-    if ip == gateway_ip:
-        return "gateway"
-    if ip == isp_ip or ip in _WAN_IPS:
-        return "wan"
-    try:
-        addr = ipaddress.ip_address(ip)
-        if addr.is_private:
-            return "internal"
-    except ValueError:
-        pass
-    return "wan"
-
-
-def _fetch_device_ips(client: Client) -> list[str]:
-    """Return IPs of all online devices from device_registry."""
-    try:
-        resp = (
-            client.table("device_registry")
-            .select("ip")
-            .eq("is_online", True)
-            .execute()
-        )
-        return [row["ip"] for row in (resp.data or [])]
-    except Exception as exc:
-        log.warning("Could not fetch device_registry IPs: %s", exc)
-        return []
-
-
-def _build_targets(client: Client) -> dict[str, str]:
-    """Return {ip: category} dict for this measurement cycle."""
+def _build_targets() -> dict[str, str]:
+    """Return {ip: category} dict of fixed targets."""
     targets: dict[str, str] = {}
 
     if GATEWAY_IP:
@@ -86,10 +55,6 @@ def _build_targets(client: Client) -> dict[str, str]:
         targets[ISP_GATEWAY_IP] = "wan"
     for ip in _WAN_IPS:
         targets[ip] = "wan"
-
-    for ip in _fetch_device_ips(client):
-        if ip not in targets:
-            targets[ip] = _categorise(ip, GATEWAY_IP, ISP_GATEWAY_IP)
 
     return targets
 
@@ -165,19 +130,11 @@ def main() -> None:
     )
     client: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-    # Refresh device list every 5 cycles to pick up newly-discovered devices
-    # without hammering Supabase on every probe.
-    device_refresh_every = max(1, 300 // FPING_INTERVAL)
-    cycle = 0
-
-    targets: dict[str, str] = {}
+    targets = _build_targets()
+    log.info("Fixed targets: %s", list(targets.keys()))
 
     while True:
         start = time.monotonic()
-
-        if cycle % device_refresh_every == 0:
-            targets = _build_targets(client)
-            log.info("Target list refreshed — %d IPs", len(targets))
 
         if targets:
             now    = datetime.now(timezone.utc).isoformat()
@@ -187,9 +144,8 @@ def main() -> None:
             _write(client, rows)
             log.debug("Wrote %d latency rows", len(rows))
         else:
-            log.warning("No targets configured — check GATEWAY_IP and device_registry")
+            log.warning("No targets configured — check GATEWAY_IP env var")
 
-        cycle += 1
         elapsed = time.monotonic() - start
         sleep_for = max(0.0, FPING_INTERVAL - elapsed)
         time.sleep(sleep_for)

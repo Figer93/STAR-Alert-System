@@ -144,6 +144,7 @@ class LatencyPoint(BaseModel):
 
 class LatencyResponse(BaseModel):
     targets: list[str]
+    target_types: dict[str, str] = {}   # target_name → target_type ('gateway'|'wan'|'dns'|'internal')
     series: list[dict[str, Any]]
 
 
@@ -836,8 +837,17 @@ async def get_latency(
         rows = await _exec(db, sql_raw, params)
         logger.info("latency raw fallback returned %d rows", len(rows))
 
-    # Collect distinct target names in the result
-    all_targets = sorted({r["target_name"] for r in rows if r.get("target_name")})
+    # Collect distinct target names and their types in the result
+    all_targets  = sorted({r["target_name"] for r in rows if r.get("target_name")})
+    target_types: dict[str, str] = {}
+    if all_targets:
+        type_rows = await _exec(db, """
+            SELECT DISTINCT ON (target_name) target_name, target_type
+            FROM latency_metrics
+            WHERE target_name = ANY(:names)
+            ORDER BY target_name, time DESC
+        """, {"names": all_targets})
+        target_types = {r["target_name"]: r["target_type"] for r in type_rows if r.get("target_type")}
 
     # Pivot: one dict per time bucket, one key per target
     buckets: dict[str, dict] = {}
@@ -855,6 +865,7 @@ async def get_latency(
 
     return LatencyResponse(
         targets=all_targets,
+        target_types=target_types,
         series=sorted(buckets.values(), key=lambda x: x["time"]),
     )
 
@@ -1228,26 +1239,27 @@ async def get_device(ip: str, db: AsyncSession = Depends(get_db)):
             GROUP BY bucket ORDER BY bucket ASC
         """, {"ip": ip})
 
-    # Latency to device last 24h — try time_bucket first, fall back to date_trunc
+    # Gateway latency last 24h (shows network conditions for this device's segment)
+    # fping tracks fixed targets (gateway/WAN/DNS), not individual device IPs
     latency_24h = await _exec(db, """
         SELECT time_bucket('15 minutes', time) AS bucket,
                AVG(rtt_ms) AS avg_rtt,
                AVG(packet_loss_pct) AS avg_loss
         FROM latency_metrics
-        WHERE target_ip::text = :ip
+        WHERE target_type = 'gateway'
           AND time > NOW() - INTERVAL '24 hours'
         GROUP BY bucket ORDER BY bucket ASC
-    """, {"ip": ip})
+    """, {})
     if not latency_24h:
         latency_24h = await _exec(db, """
-            SELECT date_trunc('minute', time) AS bucket,
+            SELECT date_trunc('hour', time) AS bucket,
                    AVG(rtt_ms) AS avg_rtt,
                    AVG(packet_loss_pct) AS avg_loss
             FROM latency_metrics
-            WHERE target_ip::text = :ip
+            WHERE target_type = 'gateway'
               AND time > NOW() - INTERVAL '24 hours'
             GROUP BY bucket ORDER BY bucket ASC
-        """, {"ip": ip})
+        """, {})
 
     # Related incidents
     incidents = await _exec(db,

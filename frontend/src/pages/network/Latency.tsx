@@ -8,8 +8,9 @@ import {
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface LatencyResponse {
-  targets: string[]
-  series:  Record<string, number | string | null>[]
+  targets:      string[]
+  target_types: Record<string, string>   // target_name → 'gateway'|'wan'|'dns'|'internal'
+  series:       Record<string, number | string | null>[]
 }
 
 interface TargetStats {
@@ -573,9 +574,13 @@ export default function NetworkLatency() {
         if (!cancelled) {
           setData(d)
           setError(false)
-          // Initialise checkboxes once from targets
+          // Initialise checkboxes once: default to gateway + known public DNS only
           if (!checkedInit && d.targets.length) {
-            setChecked(new Set(d.targets))
+            const KEY_WAN = new Set(['8.8.8.8', '1.1.1.1'])
+            const defaults = d.targets.filter(t =>
+              d.target_types[t] === 'gateway' || KEY_WAN.has(t)
+            )
+            setChecked(new Set(defaults.length ? defaults : d.targets))
             setCheckedInit(true)
           }
         }

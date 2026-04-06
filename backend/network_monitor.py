@@ -333,12 +333,14 @@ async def _check_interface_errors(db: AsyncSession) -> None:
                                     affected_switch=switch_id, affected_port=port_id):
             continue
 
-        device_ip = row.get("device_ip") or None
+        device_ip   = row.get("device_ip") or None
+        hostname    = device_name  # device_name from switch_port_metrics
+
         await _create_incident(
             db,
             severity="medium",
             category="interface_error",
-            title=f"Interface errors on {switch_name} / {port_id} ({device_name})",
+            title=f"Interface errors on {switch_name} / {port_id} ({hostname})",
             description=(
                 f"Port {port_id} on {switch_name} reported {rx_errors:,} RX errors "
                 f"in the last 5 minutes. Likely a cable or NIC fault."
@@ -346,12 +348,21 @@ async def _check_interface_errors(db: AsyncSession) -> None:
             affected_ip=device_ip,
             affected_switch=switch_id,
             affected_port=port_id,
-            evidence={"rx_errors": rx_errors, "device_name": device_name},
+            evidence={
+                "rx_errors":      rx_errors,
+                "device_name":    hostname,
+                "likely_cause":   "cable_or_nic",
+            },
         )
-        await _send_telegram(
-            f"⚠️ Interface errors on {switch_name}/{port_id} ({device_name}). "
-            f"Possible cable or NIC issue."
+        link = _investigate_link(device_ip)
+        msg = (
+            f"⚠️ Cable or NIC issue: {hostname} on Port {port_id}. "
+            f"{rx_errors:,} RX errors. "
+            f"Inspect cable at switch {switch_name} / Port {port_id}."
         )
+        if link:
+            msg += f"\n{link}"
+        await _send_telegram(msg)
         logger.warning("Interface error incident opened: %s / %s", switch_id, port_id)
 
 

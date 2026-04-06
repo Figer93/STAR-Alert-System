@@ -380,6 +380,78 @@ function DevicePanel({ ip, inv, detail }: { ip: string; inv: InvestigateResponse
   )
 }
 
+// ── Why-we-think-this explanations per cause ──────────────────────────────────
+
+const CAUSE_EXPLANATIONS: Record<string, string[]> = {
+  cable_or_nic: [
+    'RX errors accumulate when frames arrive corrupted — the most common cause is a damaged or loose Ethernet cable.',
+    'A failing NIC will produce similar error patterns regardless of the cable.',
+    'TX errors are rare with modern switches; if both RX and TX are elevated simultaneously, suspect the NIC rather than the cable.',
+    'Replacing the patch cable is the quickest first step as it requires no downtime.',
+  ],
+  wan_issue: [
+    'Packet loss on the WAN target (8.8.8.8 / 1.1.1.1) while the gateway remains reachable points to the ISP link, not the LAN.',
+    'Fluctuating RTT to external addresses with stable internal latency confirms the issue is upstream.',
+    'Check the router WAN interface for PPP re-connects or DHCP lease renewals in the provider logs.',
+  ],
+  firewall_drop: [
+    'High packet loss to a specific destination while other targets are healthy usually means a firewall ACL or security policy is silently dropping packets.',
+    'Look for matching DENY entries in the pfSense filter log for the source IP and destination port.',
+    'Common triggers: geo-blocking, IDS/IPS signature match, or a new firewall rule pushed overnight.',
+  ],
+  server_side: [
+    'All local paths are healthy (low gateway loss, no port errors) but traffic to a specific remote server shows loss.',
+    'This pattern typically means the remote endpoint is overloaded, rate-limiting, or experiencing its own network issues.',
+    'Verify by testing from a different network — if the same loss is observed, the problem is at the server or its upstream provider.',
+  ],
+  wifi_signal: [
+    'Wireless clients can show elevated packet loss or latency even when the AP is functioning correctly, due to RF interference or distance.',
+    'Check the associated AP for low RSSI or high retry rates in UniFi.',
+    'Switching the client to 5 GHz or relocating it closer to the AP typically resolves signal-related issues.',
+  ],
+  healthy: [
+    'No elevated error rates, packet loss, or latency spikes were detected during the selected time window.',
+    'If the user is reporting a problem, consider a longer time window or check application-layer logs.',
+  ],
+  unknown: [
+    'Not enough data was collected during the selected window to form a confident diagnosis.',
+    'Widen the time window or wait for additional monitoring cycles to accumulate data.',
+  ],
+}
+
+function WhyWeThink({ cause }: { cause: string }) {
+  const [open, setOpen] = useState(false)
+  const points = CAUSE_EXPLANATIONS[cause]
+  if (!points || points.length === 0) return null
+
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 6,
+          background: 'none', border: 'none', cursor: 'pointer',
+          padding: 0, color: 'var(--text-dim)',
+          fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em',
+        }}
+      >
+        {open ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+        Why we think this
+      </button>
+      {open && (
+        <div style={{ marginTop: 8, paddingLeft: 4 }}>
+          {points.map((p, i) => (
+            <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 6 }}>
+              <span style={{ color: 'var(--text-dim)', fontSize: 14, lineHeight: 1.5, flexShrink: 0 }}>–</span>
+              <span style={{ fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.6 }}>{p}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Diagnosis Panel ───────────────────────────────────────────────────────────
 
 function DiagnosisPanel({ hypothesis }: { hypothesis: Hypothesis }) {
@@ -413,6 +485,8 @@ function DiagnosisPanel({ hypothesis }: { hypothesis: Hypothesis }) {
           ))}
         </div>
       )}
+
+      <WhyWeThink cause={hypothesis.likely_cause} />
 
       {hypothesis.recommended_action && (
         <div style={{

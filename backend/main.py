@@ -163,6 +163,33 @@ async def _seed_channel_settings() -> None:
     logger.info("Notification channel settings seeded")
 
 
+async def _retention_cleanup():
+    """
+    Daily: delete latency_metrics older than 7 days and switch_port_metrics
+    older than 30 days.  No-ops gracefully on SQLite (tables don't exist).
+    """
+    from sqlalchemy import text
+    from backend.database import AsyncSessionLocal
+    _IS_POSTGRES = "postgresql" in settings.DATABASE_URL
+
+    while True:
+        await asyncio.sleep(86_400)  # run once per day
+        if not _IS_POSTGRES:
+            continue
+        try:
+            async with AsyncSessionLocal() as db:
+                await db.execute(text(
+                    "DELETE FROM latency_metrics WHERE time < NOW() - INTERVAL '7 days'"
+                ))
+                await db.execute(text(
+                    "DELETE FROM switch_port_metrics WHERE time < NOW() - INTERVAL '30 days'"
+                ))
+                await db.commit()
+            logger.info("Retention cleanup complete")
+        except Exception:
+            logger.exception("Retention cleanup error")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting %s...", settings.APP_NAME)
@@ -179,9 +206,10 @@ async def lifespan(app: FastAPI):
         logger.exception("Failed to start syslog listener")
 
     # Background tasks
-    broadcast_task = asyncio.create_task(_stats_broadcaster())
-    offline_task   = asyncio.create_task(_source_offline_checker())
-    network_task   = asyncio.create_task(run_network_checks())
+    broadcast_task   = asyncio.create_task(_stats_broadcaster())
+    offline_task     = asyncio.create_task(_source_offline_checker())
+    network_task     = asyncio.create_task(run_network_checks())
+    retention_task   = asyncio.create_task(_retention_cleanup())
 
     # UniFi polling loop (no-op if no UniFi sources are configured)
     try:
@@ -196,6 +224,7 @@ async def lifespan(app: FastAPI):
     broadcast_task.cancel()
     offline_task.cancel()
     network_task.cancel()
+    retention_task.cancel()
     if unifi_task:
         unifi_task.cancel()
     if syslog_transport:
