@@ -32,7 +32,7 @@ SUPABASE_URL    = os.environ["SUPABASE_URL"]
 SUPABASE_KEY    = os.environ["SUPABASE_KEY"]
 GATEWAY_IP      = os.environ.get("GATEWAY_IP", "")
 ISP_GATEWAY_IP  = os.environ.get("ISP_GATEWAY_IP", "").strip()
-FPING_INTERVAL  = int(os.environ.get("FPING_INTERVAL", "10"))
+FPING_INTERVAL  = int(os.environ.get("FPING_INTERVAL", "30"))
 
 # Static WAN targets always included.
 _WAN_IPS = {"8.8.8.8", "1.1.1.1"}

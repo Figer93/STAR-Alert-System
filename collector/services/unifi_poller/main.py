@@ -138,12 +138,43 @@ def _parse_switch_ports(
     return rows
 
 
+# ── Device type detection ─────────────────────────────────────────────────────
+
+# UniFi device type field → device_registry device_type
+_UNIFI_DEVICE_TYPE_MAP: dict[str, str] = {
+    "uap": "ap",
+    "usw": "server",   # switches are critical infrastructure
+    "ugw": "server",   # gateways are critical infrastructure
+}
+
+# Hostname substrings → device_type (checked case-insensitively, first match wins)
+_HOSTNAME_PATTERNS: list[tuple[tuple[str, ...], str]] = [
+    (("IPHONE", "IPAD", "GALAXY", "ANDROID", "WATCH", "PIXEL"), "mobile"),
+    (("STAR-LT", "-LT-", "LAPTOP", "MACBOOK", "THINKPAD", "SURFACE"), "workstation"),
+    (("STAR-D", "DESKTOP", "-PC-", "IMAC"), "workstation"),
+    (("LT",), "workstation"),   # STAR naming: STAR-LT01, LT-JOHN, etc.
+    (("PRINTER", "BRWA", "BROTHER", "HP-", "CANON", "RICOH", "XEROX"), "printer"),
+    (("SERVER", "SRV-", "NAS", "SYNOLOGY", "QNAP", "FILESERVER"), "server"),
+]
+
+
+def _detect_client_type(hostname: str) -> str:
+    """Infer device_type from a client hostname using STAR naming conventions."""
+    if not hostname:
+        return "unknown"
+    h = hostname.upper()
+    for substrings, dtype in _HOSTNAME_PATTERNS:
+        if any(s in h for s in substrings):
+            return dtype
+    return "unknown"
+
+
 # ── Client parsing ────────────────────────────────────────────────────────────
 
 def _parse_clients(stations: list[dict]) -> list[dict]:
     """
     Map connected UniFi stations to device_registry upsert rows.
-    Only fields present in device_registry are populated; others left to defaults.
+    Device type is inferred from hostname patterns; 'unknown' if no match.
     """
     rows = []
     for sta in stations:
@@ -152,17 +183,46 @@ def _parse_clients(stations: list[dict]) -> list[dict]:
         if not mac or not ip:
             continue
 
-        sw_mac  = sta.get("sw_mac", "").lower() or None
-        sw_port = sta.get("sw_port")
+        hostname = sta.get("hostname") or sta.get("name") or ""
+        sw_mac   = sta.get("sw_mac", "").lower() or None
+        sw_port  = sta.get("sw_port")
         rows.append({
             "mac":         mac,
             "ip":          ip,
-            "hostname":    sta.get("hostname") or sta.get("name") or "",
-            "device_type": "unknown",
+            "hostname":    hostname,
+            "device_type": _detect_client_type(hostname),
             "is_online":   True,
             "last_seen":   datetime.now(timezone.utc).isoformat(),
             "switch_id":   sw_mac,
             "port_id":     str(sw_port) if sw_port else None,
+        })
+    return rows
+
+
+def _parse_infrastructure(devices: list[dict]) -> list[dict]:
+    """
+    Map UniFi infrastructure devices (APs, switches, gateways) to
+    device_registry upsert rows, so they appear in the device list
+    with the correct device_type.
+    """
+    rows = []
+    for device in devices:
+        dtype = _UNIFI_DEVICE_TYPE_MAP.get(device.get("type", ""))
+        if not dtype:
+            continue  # unknown device class — skip
+
+        ip  = device.get("ip", "").strip()
+        mac = device.get("mac", "").lower()
+        if not ip or not mac:
+            continue
+
+        rows.append({
+            "mac":         mac,
+            "ip":          ip,
+            "hostname":    device.get("name") or device.get("model", mac),
+            "device_type": dtype,
+            "is_online":   True,
+            "last_seen":   datetime.now(timezone.utc).isoformat(),
         })
     return rows
 
@@ -179,14 +239,15 @@ def _write_port_metrics(client: Client, rows: list[dict]) -> None:
         log.error("Failed to insert switch_port_metrics: %s", exc)
 
 
-def _upsert_clients(client: Client, rows: list[dict]) -> None:
+def _upsert_devices(client: Client, rows: list[dict]) -> None:
+    """Upsert any device_registry rows (clients or infrastructure)."""
     if not rows:
         return
     try:
         client.table("device_registry").upsert(
             rows, on_conflict="ip"
         ).execute()
-        log.info("Upserted %d client rows into device_registry", len(rows))
+        log.info("Upserted %d device rows into device_registry", len(rows))
     except Exception as exc:
         log.error("Failed to upsert device_registry: %s", exc)
 
@@ -215,9 +276,13 @@ def main() -> None:
             port_rows = _parse_switch_ports(devices, stations, now)
             _write_port_metrics(supabase, port_rows)
 
-            # Connected clients → device_registry upsert
+            # Connected clients → device_registry upsert (with detected device types)
             client_rows = _parse_clients(stations)
-            _upsert_clients(supabase, client_rows)
+            _upsert_devices(supabase, client_rows)
+
+            # Infrastructure devices (APs, switches, gateways) → device_registry
+            infra_rows = _parse_infrastructure(devices)
+            _upsert_devices(supabase, infra_rows)
 
         except requests.HTTPError as exc:
             log.error("UniFi HTTP error: %s", exc)

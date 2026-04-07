@@ -165,29 +165,43 @@ async def _seed_channel_settings() -> None:
 
 async def _retention_cleanup():
     """
-    Daily: delete latency_metrics older than 7 days and switch_port_metrics
-    older than 30 days.  No-ops gracefully on SQLite (tables don't exist).
+    Purge stale time-series rows on startup, then once every 24 hours.
+
+    Retention policy:
+      latency_metrics      — keep 2 days
+      switch_port_metrics  — keep 2 days
+      network_incidents    — keep 30 days (resolved only; open incidents are kept forever)
     """
     from sqlalchemy import text
     from backend.database import AsyncSessionLocal
     _IS_POSTGRES = "postgresql" in settings.DATABASE_URL
 
-    while True:
-        await asyncio.sleep(86_400)  # run once per day
+    async def _run_cleanup() -> None:
         if not _IS_POSTGRES:
-            continue
+            return
         try:
             async with AsyncSessionLocal() as db:
                 await db.execute(text(
-                    "DELETE FROM latency_metrics WHERE time < NOW() - INTERVAL '7 days'"
+                    "DELETE FROM latency_metrics WHERE time < NOW() - INTERVAL '2 days'"
                 ))
                 await db.execute(text(
-                    "DELETE FROM switch_port_metrics WHERE time < NOW() - INTERVAL '30 days'"
+                    "DELETE FROM switch_port_metrics WHERE time < NOW() - INTERVAL '2 days'"
+                ))
+                await db.execute(text(
+                    "DELETE FROM network_incidents "
+                    "WHERE resolved_at IS NOT NULL "
+                    "  AND started_at < NOW() - INTERVAL '30 days'"
                 ))
                 await db.commit()
             logger.info("Retention cleanup complete")
         except Exception:
             logger.exception("Retention cleanup error")
+
+    # Run immediately on startup to clear any backlog, then daily
+    await _run_cleanup()
+    while True:
+        await asyncio.sleep(86_400)
+        await _run_cleanup()
 
 
 @asynccontextmanager

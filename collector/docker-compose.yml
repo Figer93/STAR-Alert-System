@@ -93,7 +93,7 @@ services:
       SUPABASE_KEY: ${SUPABASE_KEY}
       GATEWAY_IP: ${GATEWAY_IP}
       ISP_GATEWAY_IP: ${ISP_GATEWAY_IP:-}
-      FPING_INTERVAL: "10"
+      FPING_INTERVAL: "30"
     networks:
       - collector_net
 

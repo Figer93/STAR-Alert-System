@@ -271,7 +271,7 @@ class DeviceRow(BaseModel):
 
 class DeviceUpdate(BaseModel):
     notes: Optional[str] = None
-    device_type: Optional[Literal["workstation", "server", "printer", "ap", "unknown"]] = None
+    device_type: Optional[Literal["workstation", "server", "printer", "ap", "mobile", "unknown"]] = None
 
 
 class NetworkSettingItem(BaseModel):
@@ -400,31 +400,37 @@ def _port_status(row: dict) -> str:
 
 def _health_score(
     wan_loss: float,
-    wan_rtt: float,
-    gateway_loss: float,
+    warning_ports: int,
     error_ports: int,
-    critical_incidents: int,
-    other_incidents: int,
     collector_online: bool,
     has_data: bool,
 ) -> int:
+    """
+    Weighted health score (0-100):
+      WAN component       (40%) — based on packet loss %
+      Ports component     (40%) — deductions per warning/error port
+      Collector component (20%) — 100 if heartbeat fresh, 0 if offline
+    """
     if not has_data:
         return 0
-    score = 100
-    if   wan_loss >= 50: score -= 40
-    elif wan_loss >= 10: score -= 30
-    elif wan_loss >=  5: score -= 20
-    elif wan_loss >=  2: score -= 10
-    if   wan_rtt  >= 200: score -= 15
-    elif wan_rtt  >= 100: score -=  5
-    if   gateway_loss >= 5: score -= 20
-    elif gateway_loss >= 1: score -= 10
-    score -= min(error_ports, 6) * 5
-    score -= min(critical_incidents, 2) * 15
-    score -= min(other_incidents, 4) * 5
-    if not collector_online:
-        score -= 10
-    return max(0, min(100, score))
+
+    # WAN (40%)
+    if wan_loss < 1.0:
+        wan_score = 100
+    elif wan_loss < 5.0:
+        wan_score = 70
+    elif wan_loss < 10.0:
+        wan_score = 40
+    else:
+        wan_score = 0
+
+    # Ports (40%) — warning ports cost 10 pts, error ports cost 20 pts
+    ports_score = max(0, 100 - warning_ports * 10 - error_ports * 20)
+
+    # Collector (20%)
+    collector_score = 100 if collector_online else 0
+
+    return round(wan_score * 0.4 + ports_score * 0.4 + collector_score * 0.2)
 
 
 def _compute_hypothesis(
@@ -618,12 +624,18 @@ async def get_overview(db: AsyncSession = Depends(get_db)):
     active_devices = await _scalar(db,
         "SELECT COUNT(*) FROM device_registry WHERE is_online = true")
 
-    # ── Ports with errors in last 5 min ──────────────────────────────────────
+    # ── Ports with errors in last 5 min (warning: 1-100 errors, error: >100) ──
+    warning_ports = await _scalar(db, """
+        SELECT COUNT(DISTINCT port_id)
+        FROM switch_port_metrics
+        WHERE time > NOW() - INTERVAL '5 minutes'
+          AND (rx_errors BETWEEN 1 AND 100 OR tx_errors BETWEEN 1 AND 100)
+    """)
     error_ports = await _scalar(db, """
         SELECT COUNT(DISTINCT port_id)
         FROM switch_port_metrics
         WHERE time > NOW() - INTERVAL '5 minutes'
-          AND (rx_errors > 0 OR tx_errors > 0)
+          AND (rx_errors > 100 OR tx_errors > 100)
     """)
 
     # ── Collector heartbeat ───────────────────────────────────────────────────
@@ -648,11 +660,6 @@ async def get_overview(db: AsyncSession = Depends(get_db)):
     open_incidents = await _scalar(db,
         "SELECT COUNT(*) FROM network_incidents WHERE resolved_at IS NULL")
 
-    critical_open = await _scalar(db,
-        "SELECT COUNT(*) FROM network_incidents "
-        "WHERE resolved_at IS NULL AND severity = 'critical'")
-    other_open = int(open_incidents) - int(critical_open)
-
     # ── Bytes last hour ───────────────────────────────────────────────────────
     bytes_last_hour = await _scalar(db, """
         SELECT COALESCE(SUM(bytes), 0)
@@ -661,6 +668,8 @@ async def get_overview(db: AsyncSession = Depends(get_db)):
     """, default=0)
 
     has_data = bool(wan_rows and wan_rows[0]["avg_rtt"] is not None)
+
+    total_error_ports = int(warning_ports) + int(error_ports)
 
     # ── UniFi Cloud status (non-blocking — failure yields connected=False) ────
     unifi_cloud = await _fetch_unifi_cloud()
@@ -672,9 +681,9 @@ async def get_overview(db: AsyncSession = Depends(get_db)):
             packet_loss_pct=round(wan_loss, 2) if wan_loss else None,
         ),
         internal=InternalStatus(
-            status=_internal_status(int(error_ports), int(active_devices)),
+            status=_internal_status(total_error_ports, int(active_devices)),
             active_devices=int(active_devices),
-            error_ports=int(error_ports),
+            error_ports=total_error_ports,
         ),
         collector=CollectorStatus(
             online=collector_online,
@@ -685,11 +694,8 @@ async def get_overview(db: AsyncSession = Depends(get_db)):
         bytes_last_hour=int(bytes_last_hour),
         health_score=_health_score(
             wan_loss=wan_loss,
-            wan_rtt=wan_rtt,
-            gateway_loss=gateway_loss,
+            warning_ports=int(warning_ports),
             error_ports=int(error_ports),
-            critical_incidents=int(critical_open),
-            other_incidents=max(0, other_open),
             collector_online=collector_online,
             has_data=has_data,
         ),

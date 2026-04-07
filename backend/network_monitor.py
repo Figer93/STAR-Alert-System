@@ -50,11 +50,26 @@ _TRAFFIC_HISTORY_MIN_AVG_BYTES = 102_400  # 100 KB — ignore very-low-traffic d
 # Module-level state for collector liveness (no DB row involved)
 _collector_online_state: Optional[bool] = None
 
+# ── Telegram rate limiting ────────────────────────────────────────────────────
+# Per-device cooldown: at most 1 new-incident alert per (category, entity) per hour.
+# Hourly cap: at most 10 total new-incident alerts per hour across all categories.
+# Resolution / collector-transition messages are EXEMPT and always sent immediately.
 
-# ── Telegram ──────────────────────────────────────────────────────────────────
+_tg_sent_keys:  dict[str, datetime] = {}   # dedup_key → last sent timestamp
+_tg_hour_log:   list[datetime]      = []   # timestamps of sent new-incident alerts
+_tg_suppressed: int                 = 0    # suppressed count since last successful send
+
+_TELEGRAM_DEVICE_COOLDOWN_S = 3_600   # 1 hour between alerts for the same entity
+_TELEGRAM_HOURLY_CAP        = 10      # max new-incident alerts per hour globally
+
+
+# ── Telegram helpers ──────────────────────────────────────────────────────────
 
 async def _send_telegram(message: str) -> None:
-    """Send a plain-text Telegram message to all configured chat IDs."""
+    """
+    Send a plain-text Telegram message to all configured chat IDs.
+    No rate limiting — used for resolutions and status transitions.
+    """
     if not settings.TELEGRAM_BOT_TOKEN or not settings.telegram_chat_id_list:
         logger.debug("Telegram not configured — skipping network alert")
         return
@@ -65,6 +80,53 @@ async def _send_telegram(message: str) -> None:
             await bot.send_message(chat_id=chat_id, text=message)
     except Exception as exc:
         logger.error("Network monitor Telegram send failed: %s", exc)
+
+
+async def _rate_limited_telegram(message: str, dedup_key: str) -> None:
+    """
+    Rate-limited Telegram send for NEW incident alerts.
+
+    Rules (all applied before sending):
+    1. Per-entity cooldown: if the same dedup_key was sent within the last hour, suppress.
+    2. Hourly cap: if >= 10 new-incident alerts have been sent in the last 60 minutes,
+       suppress and count. The suppressed count is prepended to the next message that
+       actually gets through.
+
+    dedup_key should be "{category}:{affected_ip}" or "{category}" for network-wide alerts.
+    """
+    global _tg_suppressed, _tg_hour_log, _tg_sent_keys
+
+    now    = datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=1)
+
+    # Purge stale entries from the hourly window
+    _tg_hour_log = [t for t in _tg_hour_log if t > cutoff]
+
+    # 1. Per-entity cooldown
+    last_sent = _tg_sent_keys.get(dedup_key)
+    if last_sent and (now - last_sent).total_seconds() < _TELEGRAM_DEVICE_COOLDOWN_S:
+        _tg_suppressed += 1
+        logger.debug("Telegram suppressed (device cooldown) key=%s total_suppressed=%d",
+                     dedup_key, _tg_suppressed)
+        return
+
+    # 2. Hourly cap
+    if len(_tg_hour_log) >= _TELEGRAM_HOURLY_CAP:
+        _tg_suppressed += 1
+        logger.debug("Telegram suppressed (hourly cap) total_suppressed=%d", _tg_suppressed)
+        return
+
+    # Prepend suppressed summary if any were held back
+    full_message = message
+    if _tg_suppressed > 0:
+        full_message = (
+            f"ℹ️ {_tg_suppressed} alert(s) suppressed in the last hour.\n\n{message}"
+        )
+        _tg_suppressed = 0
+
+    await _send_telegram(full_message)
+    _tg_hour_log.append(now)
+    _tg_sent_keys[dedup_key] = now
 
 
 def _investigate_link(ip: Optional[str] = None) -> str:
@@ -282,7 +344,7 @@ async def _check_wan_loss(db: AsyncSession) -> None:
         msg = f"🔴 WAN packet loss: {avg_loss:.1f}% — Internal network OK. Check ISP."
         if link:
             msg += f"\n{link}"
-        await _send_telegram(msg)
+        await _rate_limited_telegram(msg, dedup_key="wan_issue")
         logger.warning("WAN packet loss incident opened: %.1f%%", avg_loss)
 
     elif open_inc:
@@ -362,36 +424,55 @@ async def _check_interface_errors(db: AsyncSession) -> None:
         )
         if link:
             msg += f"\n{link}"
-        await _send_telegram(msg)
+        await _rate_limited_telegram(
+            msg, dedup_key=f"interface_error:{device_ip or switch_id+':'+str(port_id)}"
+        )
         logger.warning("Interface error incident opened: %s / %s", switch_id, port_id)
+
+
+_ALERTABLE_DEVICE_TYPES = {"server", "ap"}   # always create incident + telegram
 
 
 async def _check_devices_offline(db: AsyncSession) -> None:
     """
     Check 3: Devices still marked is_online=true whose last_seen is stale.
-    Marks them offline in device_registry and creates an incident per device.
-    Also resolves incidents for devices that have come back online.
+
+    ALL stale devices are marked is_online=false in device_registry.
+    Only devices matching these criteria generate an incident and Telegram alert:
+      - device_type IN ('server', 'ap')   — critical infrastructure
+      - is_critical = true                — manually flagged by operators
+
+    Workstations, laptops, phones, and unknown devices are silently updated.
     """
-    # Devices that need to be marked offline
-    stale = await _exec(db, """
-        SELECT ip::text AS ip, hostname, last_seen
+    stale = await _exec(db, f"""
+        SELECT ip::text AS ip, hostname, last_seen,
+               device_type,
+               COALESCE(is_critical, false) AS is_critical
         FROM device_registry
         WHERE is_online = true
-          AND last_seen < NOW() - INTERVAL ':minutes minutes'
-    """.replace(":minutes minutes", f"{_DEVICE_STALE_MINUTES} minutes"))
+          AND last_seen < NOW() - INTERVAL '{_DEVICE_STALE_MINUTES} minutes'
+    """)
 
     for device in stale:
-        ip       = device["ip"]
-        hostname = device.get("hostname") or ip
+        ip          = device["ip"]
+        hostname    = device.get("hostname") or ip
+        device_type = device.get("device_type") or "unknown"
+        is_critical = bool(device.get("is_critical"))
 
-        # Mark offline first
+        # Always mark offline
         await _exec(db,
             "UPDATE device_registry SET is_online = false WHERE ip::text = :ip",
             {"ip": ip})
         await db.commit()
 
+        # Only alert for critical infrastructure and manually flagged devices
+        if device_type not in _ALERTABLE_DEVICE_TYPES and not is_critical:
+            logger.debug("Device offline (no alert — type=%s): %s (%s)",
+                         device_type, hostname, ip)
+            continue
+
         if await _get_open_incident(db, "device_offline", affected_ip=ip):
-            continue  # Incident already open
+            continue
         if await _recently_resolved(db, "device_offline", affected_ip=ip):
             continue
 
@@ -403,18 +484,22 @@ async def _check_devices_offline(db: AsyncSession) -> None:
         )
         await _create_incident(
             db,
-            severity="low",
+            severity="high" if device_type == "server" else "medium",
             category="device_offline",
             title=f"{hostname} ({ip}) went offline",
             description=(
-                f"{hostname} at {ip} has not been seen for over "
+                f"{hostname} [{device_type}] at {ip} has not been seen for over "
                 f"{_DEVICE_STALE_MINUTES} minutes. Last seen: {last_seen_str}."
             ),
             affected_ip=ip,
-            evidence={"last_seen": last_seen_str},
+            evidence={"last_seen": last_seen_str, "device_type": device_type},
         )
-        await _send_telegram(f"📴 {hostname} ({ip}) went offline.")
-        logger.warning("Device offline: %s (%s)", hostname, ip)
+        link = _investigate_link(ip)
+        msg = f"📴 {hostname} ({ip}) [{device_type}] went offline."
+        if link:
+            msg += f"\n{link}"
+        await _rate_limited_telegram(msg, dedup_key=f"device_offline:{ip}")
+        logger.warning("Device offline (alert sent): %s (%s) [%s]", hostname, ip, device_type)
 
     # Auto-resolve incidents for devices that have come back online
     open_incs = await _exec(db, """
@@ -472,7 +557,7 @@ async def _check_internal_latency(db: AsyncSession) -> None:
         msg = f"🔴 Internal latency: {avg_rtt:.1f}ms to gateway. Check core switch load."
         if link:
             msg += f"\n{link}"
-        await _send_telegram(msg)
+        await _rate_limited_telegram(msg, dedup_key="internal_latency")
         logger.warning("Internal latency incident opened: %.1f ms", avg_rtt)
 
     elif open_inc:
@@ -599,7 +684,7 @@ async def _check_traffic_anomaly(db: AsyncSession) -> None:
         )
         if link:
             msg += f"\n{link}"
-        await _send_telegram(msg)
+        await _rate_limited_telegram(msg, dedup_key=f"traffic_anomaly:{ip}")
         logger.warning("Traffic anomaly opened for %s: %.1f× normal", hostname, ratio)
 
 
