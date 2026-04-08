@@ -601,42 +601,37 @@ async def get_overview(db: AsyncSession = Depends(get_db)):
     Single-call dashboard summary: WAN health, internal health, collector
     status, open incident count, bytes last hour, and a 0-100 health score.
     """
-    # ── WAN latency (average of latest rows per wan/dns target, last 5 min) ──
-    wan_rows = await _exec(db, """
-        SELECT AVG(rtt_ms) AS avg_rtt, AVG(packet_loss_pct) AS avg_loss
+    # ── WAN + gateway latency in one query (single table scan) ───────────────
+    lat_rows = await _exec(db, """
+        SELECT
+            AVG(CASE WHEN target_type IN ('wan', 'dns') THEN rtt_ms          END) AS wan_rtt,
+            AVG(CASE WHEN target_type IN ('wan', 'dns') THEN packet_loss_pct  END) AS wan_loss,
+            AVG(CASE WHEN target_type = 'gateway'       THEN packet_loss_pct  END) AS gw_loss
         FROM latency_metrics
         WHERE time > NOW() - INTERVAL '5 minutes'
-          AND target_type IN ('wan', 'dns')
+          AND target_type IN ('wan', 'dns', 'gateway')
     """)
-    wan_rtt  = float(wan_rows[0]["avg_rtt"]  or 0) if wan_rows else 0.0
-    wan_loss = float(wan_rows[0]["avg_loss"] or 0) if wan_rows else 0.0
-
-    # ── Gateway latency ───────────────────────────────────────────────────────
-    gw_rows = await _exec(db, """
-        SELECT AVG(packet_loss_pct) AS avg_loss
-        FROM latency_metrics
-        WHERE time > NOW() - INTERVAL '5 minutes'
-          AND target_type = 'gateway'
-    """)
-    gateway_loss = float(gw_rows[0]["avg_loss"] or 0) if gw_rows else 0.0
+    wan_rtt      = float(lat_rows[0]["wan_rtt"]  or 0) if lat_rows else 0.0
+    wan_loss     = float(lat_rows[0]["wan_loss"] or 0) if lat_rows else 0.0
+    gateway_loss = float(lat_rows[0]["gw_loss"]  or 0) if lat_rows else 0.0
 
     # ── Active devices ────────────────────────────────────────────────────────
     active_devices = await _scalar(db,
         "SELECT COUNT(*) FROM device_registry WHERE is_online = true")
 
-    # ── Ports with errors in last 5 min (warning: 1-100 errors, error: >100) ──
-    warning_ports = await _scalar(db, """
-        SELECT COUNT(DISTINCT port_id)
+    # ── Ports with errors in last 5 min — single scan, two conditional counts ──
+    port_count_rows = await _exec(db, """
+        SELECT
+            COUNT(DISTINCT CASE WHEN (rx_errors BETWEEN 1 AND 100 OR tx_errors BETWEEN 1 AND 100)
+                                 AND NOT (rx_errors > 100 OR tx_errors > 100)
+                                THEN port_id END) AS warning_ports,
+            COUNT(DISTINCT CASE WHEN rx_errors > 100 OR tx_errors > 100
+                                THEN port_id END) AS error_ports
         FROM switch_port_metrics
         WHERE time > NOW() - INTERVAL '5 minutes'
-          AND (rx_errors BETWEEN 1 AND 100 OR tx_errors BETWEEN 1 AND 100)
     """)
-    error_ports = await _scalar(db, """
-        SELECT COUNT(DISTINCT port_id)
-        FROM switch_port_metrics
-        WHERE time > NOW() - INTERVAL '5 minutes'
-          AND (rx_errors > 100 OR tx_errors > 100)
-    """)
+    warning_ports = int((port_count_rows[0] if port_count_rows else {}).get("warning_ports") or 0)
+    error_ports   = int((port_count_rows[0] if port_count_rows else {}).get("error_ports")   or 0)
 
     # ── Collector heartbeat ───────────────────────────────────────────────────
     hb_rows = await _exec(db,
@@ -667,9 +662,9 @@ async def get_overview(db: AsyncSession = Depends(get_db)):
         WHERE time > NOW() - INTERVAL '1 hour'
     """, default=0)
 
-    has_data = bool(wan_rows and wan_rows[0]["avg_rtt"] is not None)
+    has_data = bool(lat_rows and lat_rows[0]["wan_rtt"] is not None)
 
-    total_error_ports = int(warning_ports) + int(error_ports)
+    total_error_ports = warning_ports + error_ports
 
     # ── UniFi Cloud status (non-blocking — failure yields connected=False) ────
     unifi_cloud = await _fetch_unifi_cloud()
@@ -694,8 +689,8 @@ async def get_overview(db: AsyncSession = Depends(get_db)):
         bytes_last_hour=int(bytes_last_hour),
         health_score=_health_score(
             wan_loss=wan_loss,
-            warning_ports=int(warning_ports),
-            error_ports=int(error_ports),
+            warning_ports=warning_ports,
+            error_ports=error_ports,
             collector_online=collector_online,
             has_data=has_data,
         ),
