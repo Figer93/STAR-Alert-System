@@ -501,25 +501,29 @@ async def _check_devices_offline(db: AsyncSession) -> None:
         await _rate_limited_telegram(msg, dedup_key=f"device_offline:{ip}")
         logger.warning("Device offline (alert sent): %s (%s) [%s]", hostname, ip, device_type)
 
-    # Auto-resolve incidents for devices that have come back online
+    # Auto-resolve incidents for devices that have come back online.
+    # Fetch ALL currently fresh-online IPs in one query, then check membership
+    # in Python — avoids one DB roundtrip per open incident.
     open_incs = await _exec(db, """
         SELECT id::text AS id, title, affected_ip::text AS affected_ip
         FROM network_incidents
         WHERE category = 'device_offline' AND resolved_at IS NULL
     """)
-    for inc in open_incs:
-        ip = inc.get("affected_ip")
-        if not ip:
-            continue
-        back = await _exec_one(db,
-            "SELECT ip FROM device_registry "
-            "WHERE ip::text = :ip AND is_online = true "
-            f"AND last_seen > NOW() - INTERVAL '{_DEVICE_STALE_MINUTES} minutes'",
-            {"ip": ip})
-        if back:
-            await _resolve_incident(db, inc["id"])
-            await _send_telegram(f"✅ Resolved: {inc['title']}")
-            logger.info("Device came back online: %s", ip)
+    if open_incs:
+        fresh_rows = await _exec(db,
+            f"SELECT ip::text AS ip FROM device_registry "
+            f"WHERE is_online = true "
+            f"AND last_seen > NOW() - INTERVAL '{_DEVICE_STALE_MINUTES} minutes'")
+        fresh_online_ips: set[str] = {r["ip"] for r in fresh_rows}
+
+        for inc in open_incs:
+            ip = inc.get("affected_ip")
+            if not ip:
+                continue
+            if ip in fresh_online_ips:
+                await _resolve_incident(db, inc["id"])
+                await _send_telegram(f"✅ Resolved: {inc['title']}")
+                logger.info("Device came back online: %s", ip)
 
 
 async def _check_internal_latency(db: AsyncSession) -> None:
