@@ -205,8 +205,11 @@ class UniFiSourcePoller:
 
     # ── Poll cycle ────────────────────────────────────────────────────────────
 
-    async def poll(self, db) -> None:
-        """Execute one full poll cycle and process all resulting alerts."""
+    async def fetch(self) -> list[RawAlert]:
+        """
+        Phase 1 — HTTP only.  Calls the UniFi controller and returns raw alerts.
+        No DB session is held during this phase; network I/O can take up to 60 s.
+        """
         raw_alerts: list[RawAlert] = []
 
         if self.config.get("monitor_devices", True):
@@ -218,6 +221,14 @@ class UniFiSourcePoller:
         if self.config.get("monitor_alarms", True):
             raw_alerts.extend(await self._poll_alarms())
 
+        return raw_alerts
+
+    async def commit(self, raw_alerts: list[RawAlert], db) -> None:
+        """
+        Phase 2 — DB only.  Writes collected alerts and the heartbeat.
+        The session passed in should be opened immediately before this call
+        so it is held for the minimum possible duration.
+        """
         if raw_alerts:
             from backend.alert_engine import process_alert
             for raw in raw_alerts:
@@ -228,6 +239,11 @@ class UniFiSourcePoller:
 
         self._last_poll_ts = time.monotonic()
         await self._update_heartbeat(db)
+
+    async def poll(self, db) -> None:
+        """Convenience wrapper — fetch then commit using an already-open session."""
+        raw_alerts = await self.fetch()
+        await self.commit(raw_alerts, db)
 
     # ── Device polling ────────────────────────────────────────────────────────
 
@@ -423,11 +439,22 @@ _pollers: dict[str, UniFiSourcePoller] = {}
 
 
 async def _run_poll_cycle(slug: str, poller: UniFiSourcePoller) -> None:
-    """Run one poll cycle for a source inside its own DB session."""
+    """
+    Run one poll cycle for a source.
+
+    The DB session is intentionally NOT open during the HTTP fetch phase so
+    that slow or unresponsive UniFi controllers cannot exhaust the connection
+    pool — connections are only checked out for the fast DB-write phase.
+    """
     try:
+        # Phase 1: HTTP requests to UniFi controller (no DB connection held)
+        raw_alerts = await poller.fetch()
+
+        # Phase 2: DB writes only — session opened as late as possible
         from backend.database import AsyncSessionLocal
         async with AsyncSessionLocal() as db:
-            await poller.poll(db)
+            await poller.commit(raw_alerts, db)
+
         poller._consecutive_failures = 0
     except Exception:
         poller._consecutive_failures += 1

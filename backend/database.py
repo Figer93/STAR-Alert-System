@@ -9,10 +9,24 @@ _engine_kwargs: dict = {"echo": settings.DEBUG}
 
 if _is_postgres:
     _engine_kwargs.update(
-        pool_size=5,
-        max_overflow=10,
+        # Conservative pool — Supabase PgBouncer already pools on the server side.
+        # Total max connections = pool_size + max_overflow = 10.
+        pool_size=3,
+        max_overflow=7,
+        # Fail fast: don't let requests queue for 30 s (the default) — surface
+        # pool exhaustion immediately so Railway restarts instead of hanging.
+        pool_timeout=10,
+        # Recycle connections every 30 min so Supabase's idle-connection killer
+        # (which fires at 5 min by default on free tier) doesn't hand us a dead
+        # socket that then fails at the worst possible moment.
+        pool_recycle=1800,
         pool_pre_ping=True,
-        connect_args={"statement_cache_size": 0},
+        connect_args={
+            # Both settings are required for asyncpg + PgBouncer compatibility.
+            # PgBouncer in transaction mode does not support prepared statements.
+            "statement_cache_size": 0,
+            "prepared_statement_cache_size": 0,
+        },
     )
 else:
     _engine_kwargs["connect_args"] = {"check_same_thread": False}

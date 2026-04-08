@@ -56,6 +56,10 @@ async def _source_offline_checker():
     """
     Periodically mark sources offline if they haven't sent a heartbeat within
     the threshold, and raise a critical alert so the team is notified.
+
+    Each stale source is processed in its own short-lived DB session so that
+    slow notification work (Telegram, email) inside process_alert cannot hold
+    a connection idle for an extended period.
     """
     OFFLINE_THRESHOLD_MINUTES = 5
     CHECK_INTERVAL_SECONDS    = 60
@@ -71,53 +75,78 @@ async def _source_offline_checker():
 
             cutoff = datetime.now(timezone.utc) - timedelta(minutes=OFFLINE_THRESHOLD_MINUTES)
 
+            # ── Phase 1: identify stale sources — short-lived read session ────
+            stmt = (
+                select(Source)
+                .where(Source.enabled == True)  # noqa: E712
+                .where(Source.type != "webhook")
+                .where(Source.status == "online")
+                .where(Source.last_seen < cutoff)
+            )
             async with AsyncSessionLocal() as db:
-                # Webhook sources only fire when events occur — silence is normal.
-                # Only check syslog/poll/push sources where continuous traffic is expected.
-                stmt = (
-                    select(Source)
-                    .where(Source.enabled == True)  # noqa: E712
-                    .where(Source.type != "webhook")
-                    .where(Source.status == "online")
-                    .where(Source.last_seen < cutoff)
-                )
                 stale_sources = (await db.execute(stmt)).scalars().all()
+                # Capture everything we need as plain values before closing session
+                stale_data = [
+                    {
+                        "id":       s.id,
+                        "slug":     s.slug,
+                        "name":     s.name,
+                        "last_seen": s.last_seen,
+                    }
+                    for s in stale_sources
+                ]
+            # Session released here — DB connection returned to pool
 
-                for source in stale_sources:
-                    logger.warning(
-                        "Source '%s' has not been seen since %s — marking offline",
-                        source.slug,
-                        source.last_seen,
-                    )
-                    old_status   = source.status
-                    source.status = "offline"
-                    await db.commit()
+            # ── Phase 2: process each source in its own session ───────────────
+            # process_alert may trigger Telegram/email; keep sessions short.
+            for src in stale_data:
+                try:
+                    async with AsyncSessionLocal() as db:
+                        # Re-fetch to get a managed ORM instance for the update
+                        source = (await db.get(Source, src["id"]))
+                        if source is None or source.status != "online":
+                            continue  # already handled by another process
 
-                    # Broadcast status change
-                    await ws_manager.broadcast(
-                        "source.status_change",
-                        {"id": source.id, "slug": source.slug, "status": "offline"},
-                    )
+                        logger.warning(
+                            "Source '%s' has not been seen since %s — marking offline",
+                            source.slug, source.last_seen,
+                        )
+                        source.status = "offline"
+                        await db.commit()
 
-                    # Raise a critical alert
-                    raw = RawAlert(
-                        source_slug=source.slug,
-                        event_type="source_offline",
-                        title=f"{source.name} went offline",
-                        message=(
-                            f"No heartbeat received from {source.name} for "
-                            f"over {OFFLINE_THRESHOLD_MINUTES} minutes. "
-                            f"Last seen: {source.last_seen.strftime('%H:%M:%S UTC') if source.last_seen else 'never'}."
-                        ),
-                        severity="critical",
-                        fingerprint_key=f"source_offline:{source.slug}",
-                        raw_payload={
-                            "source_slug": source.slug,
-                            "event": "source_offline",
-                            "last_seen": source.last_seen.isoformat() if source.last_seen else None,
-                        },
-                    )
-                    await process_alert(raw, db)
+                        await ws_manager.broadcast(
+                            "source.status_change",
+                            {"id": source.id, "slug": source.slug, "status": "offline"},
+                        )
+
+                        last_seen_str = (
+                            src["last_seen"].strftime("%H:%M:%S UTC")
+                            if src["last_seen"] else "never"
+                        )
+                        raw = RawAlert(
+                            source_slug=source.slug,
+                            event_type="source_offline",
+                            title=f"{source.name} went offline",
+                            message=(
+                                f"No heartbeat received from {source.name} for "
+                                f"over {OFFLINE_THRESHOLD_MINUTES} minutes. "
+                                f"Last seen: {last_seen_str}."
+                            ),
+                            severity="critical",
+                            fingerprint_key=f"source_offline:{source.slug}",
+                            raw_payload={
+                                "source_slug": source.slug,
+                                "event": "source_offline",
+                                "last_seen": (
+                                    src["last_seen"].isoformat()
+                                    if src["last_seen"] else None
+                                ),
+                            },
+                        )
+                        await process_alert(raw, db)
+                except Exception:
+                    logger.exception("Source offline checker error for '%s'", src.get("slug"))
+
         except Exception:
             logger.exception("Source offline checker error")
 
@@ -244,6 +273,13 @@ async def lifespan(app: FastAPI):
     if syslog_transport:
         syslog_transport.close()
         logger.info("Syslog listener closed")
+
+    # Return all pooled connections to PgBouncer cleanly.
+    # Without this, Railway deploy restarts leave ghost connections that count
+    # against Supabase's connection limit until PgBouncer times them out.
+    from backend.database import engine
+    await engine.dispose()
+    logger.info("Database engine disposed")
     logger.info("Shutdown complete")
 
 
@@ -278,30 +314,32 @@ app.include_router(ws.router)
 
 @app.get("/health")
 async def health():
-    from sqlalchemy import text
+    from sqlalchemy import text, select, func
     from backend.database import AsyncSessionLocal
-    db_ok = False
+    from backend.models import Source
+    from backend.maintenance import maintenance
+
+    db_ok          = False
+    sources_online = 0
+    sources_total  = 0
+
+    # Single session for all health-check queries — Railway polls this every ~10 s
+    # so opening two sessions here was doubling the connection churn needlessly.
     try:
         async with AsyncSessionLocal() as db:
             await db.execute(text("SELECT 1"))
             db_ok = True
+            sources_total  = (
+                await db.execute(select(func.count()).select_from(Source))
+            ).scalar_one()
+            sources_online = (
+                await db.execute(
+                    select(func.count()).select_from(Source).where(Source.status == "online")
+                )
+            ).scalar_one()
     except Exception:
         pass
 
-    from backend.models import Source
-    from sqlalchemy import select, func
-    sources_online = 0
-    sources_total  = 0
-    try:
-        async with AsyncSessionLocal() as db:
-            sources_total  = (await db.execute(select(func.count()).select_from(Source))).scalar_one()
-            sources_online = (await db.execute(
-                select(func.count()).select_from(Source).where(Source.status == "online")
-            )).scalar_one()
-    except Exception:
-        pass
-
-    from backend.maintenance import maintenance
     return {
         "status": "ok" if db_ok else "degraded",
         "app":    settings.APP_NAME,
