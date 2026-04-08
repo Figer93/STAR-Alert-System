@@ -43,7 +43,10 @@ _COLLECTOR_STALE_MINUTES = 5
 _DEVICE_STALE_MINUTES = 5
 _WAN_LOSS_THRESHOLD = 5.0             # %
 _LATENCY_THRESHOLD_MS = 50.0          # ms
-_PORT_ERROR_THRESHOLD = 50            # RX errors per 5-min window
+_PORT_ERROR_THRESHOLD = 50            # RX errors per 5-min window (raw fallback)
+_PORT_ERROR_RATE_LOW  = 0.001         # % — below this is background noise
+_PORT_ERROR_RATE_MED  = 0.1           # % — above this is medium/high confidence issue
+_PORT_MIN_BYTES       = 1_048_576     # 1 MB min traffic for rate-based threshold
 _TRAFFIC_ANOMALY_MULTIPLIER = 5.0     # × historical average
 _TRAFFIC_HISTORY_MIN_AVG_BYTES = 102_400  # 100 KB — ignore very-low-traffic devices
 
@@ -379,16 +382,39 @@ async def _check_wan_loss(db: AsyncSession) -> None:
 
 
 async def _check_interface_errors(db: AsyncSession) -> None:
-    """Check 2: Ports with more than 50 RX errors in the last 5 minutes."""
+    """
+    Check 2: Ports with significant RX errors in the last 5 minutes.
+
+    Primary threshold: error_rate = (rx_errors / rx_bytes) * 100 > 0.1%
+    with at least 1 MB of traffic in the window (avoids false positives
+    on idle ports where a handful of errors creates an inflated rate).
+
+    Fallback (for ports with very low traffic): raw rx_errors > 50,
+    matching the original behaviour.
+    """
     error_ports = await _exec(db, """
         SELECT switch_id, switch_name, port_id, port_name, device_name,
                device_ip::text AS device_ip,
-               SUM(rx_errors) AS total_rx_errors
+               SUM(rx_errors)  AS total_rx_errors,
+               SUM(rx_bytes)   AS total_rx_bytes,
+               CASE
+                   WHEN SUM(rx_bytes) > :min_bytes AND SUM(rx_bytes) > 0
+                   THEN (SUM(rx_errors)::float / SUM(rx_bytes)) * 100
+                   ELSE NULL
+               END AS error_rate_pct
         FROM switch_port_metrics
         WHERE time > NOW() - INTERVAL '5 minutes'
         GROUP BY switch_id, switch_name, port_id, port_name, device_name, device_ip
-        HAVING SUM(rx_errors) > :threshold
-    """, {"threshold": _PORT_ERROR_THRESHOLD})
+        HAVING
+            (SUM(rx_bytes) > :min_bytes AND SUM(rx_bytes) > 0
+             AND (SUM(rx_errors)::float / SUM(rx_bytes)) * 100 > :rate_threshold)
+            OR
+            (SUM(rx_bytes) <= :min_bytes AND SUM(rx_errors) > :raw_threshold)
+    """, {
+        "min_bytes":     _PORT_MIN_BYTES,
+        "rate_threshold": _PORT_ERROR_RATE_MED,
+        "raw_threshold":  _PORT_ERROR_THRESHOLD,
+    })
 
     erroring_keys = {(r["switch_id"], r["port_id"]) for r in error_ports}
 
@@ -424,8 +450,26 @@ async def _check_interface_errors(db: AsyncSession) -> None:
                                     affected_switch=switch_id, affected_port=port_id):
             continue
 
-        device_ip   = row.get("device_ip") or None
-        hostname    = device_name  # device_name from switch_port_metrics
+        device_ip    = row.get("device_ip") or None
+        hostname     = device_name  # device_name from switch_port_metrics
+        error_rate   = row.get("error_rate_pct")
+        rx_bytes_val = int(row.get("total_rx_bytes") or 0)
+
+        evidence_dict: dict = {
+            "rx_errors":    rx_errors,
+            "device_name":  hostname,
+            "likely_cause": "cable_or_nic",
+        }
+        if error_rate is not None:
+            evidence_dict["error_rate_pct"] = round(float(error_rate), 6)
+            evidence_dict["rx_bytes"] = rx_bytes_val
+
+        if error_rate is not None:
+            rate_str = f"{float(error_rate):.4f}% error rate"
+            desc_detail = f"error rate {float(error_rate):.4f}%"
+        else:
+            rate_str = f"{rx_errors:,} RX errors (low-traffic port)"
+            desc_detail = f"{rx_errors:,} RX errors"
 
         await _create_incident(
             db,
@@ -433,22 +477,18 @@ async def _check_interface_errors(db: AsyncSession) -> None:
             category="interface_error",
             title=f"Interface errors on {switch_name} / {port_id} ({hostname})",
             description=(
-                f"Port {port_id} on {switch_name} reported {rx_errors:,} RX errors "
+                f"Port {port_id} on {switch_name} reported {desc_detail} "
                 f"in the last 5 minutes. Likely a cable or NIC fault."
             ),
             affected_ip=device_ip,
             affected_switch=switch_id,
             affected_port=port_id,
-            evidence={
-                "rx_errors":      rx_errors,
-                "device_name":    hostname,
-                "likely_cause":   "cable_or_nic",
-            },
+            evidence=evidence_dict,
         )
         link = _investigate_link(device_ip)
         msg = (
             f"⚠️ Cable or NIC issue: {hostname} on Port {port_id}. "
-            f"{rx_errors:,} RX errors. "
+            f"{rate_str}. "
             f"Inspect cable at switch {switch_name} / Port {port_id}."
         )
         if link:

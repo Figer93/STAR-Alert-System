@@ -34,12 +34,29 @@ interface TimelineEvent {
 interface InvestigateMetrics {
   port_rx_errors:              number
   port_tx_errors:              number
+  port_rx_dropped:             number
+  port_tx_dropped:             number
+  port_rx_frags:               number
+  error_rate_pct:              number
+  error_timeline_profile:      string
+  error_windows_with_errors:   number
+  peer_avg_error_rate:         number | null
+  peer_comparison_result:      string
   avg_packet_loss_gateway_pct: number
   avg_packet_loss_wan_pct:     number
   avg_rtt_gateway_ms:          number | null
   bytes_sent:                  number
   bytes_received:              number
   top_destinations: Array<{ dst_ip: string | null; protocol_name: string; bytes: number; packets: number }>
+  raw_port_metrics: Array<{
+    timestamp:     string
+    rx_errors:     number
+    rx_dropped:    number
+    rx_frags:      number
+    rx_bytes:      number
+    tx_bytes:      number
+    error_rate_pct: number
+  }>
 }
 
 interface Hypothesis {
@@ -452,9 +469,93 @@ function WhyWeThink({ cause }: { cause: string }) {
   )
 }
 
+// ── Port Error Detail (inside Diagnosis) ─────────────────────────────────────
+
+const TIMELINE_LABELS: Record<string, { text: string; color: string }> = {
+  sustained:    { text: 'Sustained (6+ windows)',      color: '#ef4444' },
+  single_spike: { text: 'Single spike (1-2 windows)',  color: '#eab308' },
+  normal:       { text: 'No pattern / normal',         color: '#22c55e' },
+}
+
+const PEER_LABELS: Record<string, { text: string; color: string }> = {
+  highly_elevated: { text: '>10× peer average',        color: '#ef4444' },
+  elevated:        { text: '2-10× peer average',       color: '#eab308' },
+  normal:          { text: 'Similar to peers',         color: '#22c55e' },
+  no_peer_data:    { text: 'No peer data',             color: '#6b7280' },
+}
+
+function PortErrorDetail({ metrics }: { metrics: InvestigateMetrics }) {
+  const hasErrors = metrics.port_rx_errors > 0 || metrics.port_rx_dropped > 0 || metrics.port_rx_frags > 0
+  if (!hasErrors && metrics.error_rate_pct < 0.001) return null
+
+  const timeline = TIMELINE_LABELS[metrics.error_timeline_profile] ?? TIMELINE_LABELS.normal
+  const peer     = PEER_LABELS[metrics.peer_comparison_result]      ?? PEER_LABELS.no_peer_data
+  const rateColor = metrics.error_rate_pct > 0.1 ? '#ef4444' : metrics.error_rate_pct > 0.001 ? '#eab308' : '#22c55e'
+
+  return (
+    <div style={{
+      margin: '0 0 14px',
+      background: 'var(--bg-raised)', border: '1px solid var(--border)',
+      borderRadius: 'var(--radius)', padding: '12px 14px',
+    }}>
+      <p style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-dim)', margin: '0 0 10px' }}>
+        Port Error Detail
+      </p>
+
+      {/* Error rate */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8, paddingBottom: 8, borderBottom: '1px solid var(--border-dim)' }}>
+        <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>Error rate</span>
+        <span style={{ fontSize: 13, fontWeight: 700, color: rateColor, fontFamily: 'monospace' }}>
+          {metrics.error_rate_pct.toFixed(4)}%
+        </span>
+      </div>
+
+      {/* Error type breakdown */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6, marginBottom: 10 }}>
+        {[
+          { label: 'RX Errors',   value: metrics.port_rx_errors,  color: '#ef4444' },
+          { label: 'RX Dropped',  value: metrics.port_rx_dropped, color: '#f97316' },
+          { label: 'RX Frags',    value: metrics.port_rx_frags,   color: '#eab308' },
+        ].map(({ label, value, color }) => (
+          <div key={label} style={{ textAlign: 'center', padding: '6px 4px', background: 'var(--bg-surface)', borderRadius: 4, border: '1px solid var(--border-dim)' }}>
+            <p style={{ fontSize: 9, color: 'var(--text-dim)', margin: '0 0 2px', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 700 }}>{label}</p>
+            <p style={{ fontSize: 14, fontWeight: 700, color: value > 0 ? color : 'var(--text-dim)', margin: 0 }}>{value.toLocaleString()}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Timeline profile */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+        <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>Timeline profile</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ width: 7, height: 7, borderRadius: '50%', background: timeline.color, flexShrink: 0 }} />
+          <span style={{ fontSize: 11, color: timeline.color, fontWeight: 600 }}>{timeline.text}</span>
+          <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>
+            ({metrics.error_windows_with_errors} of {Math.min(12, Math.max(metrics.error_windows_with_errors, 1))} windows)
+          </span>
+        </div>
+      </div>
+
+      {/* Peer comparison */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>Peer comparison</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ width: 7, height: 7, borderRadius: '50%', background: peer.color, flexShrink: 0 }} />
+          <span style={{ fontSize: 11, color: peer.color, fontWeight: 600 }}>{peer.text}</span>
+          {metrics.peer_avg_error_rate !== null && metrics.peer_avg_error_rate !== undefined && (
+            <span style={{ fontSize: 10, color: 'var(--text-dim)', fontFamily: 'monospace' }}>
+              (peer avg: {metrics.peer_avg_error_rate.toFixed(4)}%)
+            </span>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Diagnosis Panel ───────────────────────────────────────────────────────────
 
-function DiagnosisPanel({ hypothesis }: { hypothesis: Hypothesis }) {
+function DiagnosisPanel({ hypothesis, metrics }: { hypothesis: Hypothesis; metrics: InvestigateMetrics }) {
   const color   = diagnosisColor(hypothesis.likely_cause, hypothesis.confidence)
   const label   = CAUSE_LABELS[hypothesis.likely_cause] ?? hypothesis.likely_cause
   const confBg  = { high: '#ef444422', medium: '#eab30822', low: '#6b728022' }[hypothesis.confidence]
@@ -484,6 +585,10 @@ function DiagnosisPanel({ hypothesis }: { hypothesis: Hypothesis }) {
             </div>
           ))}
         </div>
+      )}
+
+      {hypothesis.likely_cause === 'cable_or_nic' && (
+        <PortErrorDetail metrics={metrics} />
       )}
 
       <WhyWeThink cause={hypothesis.likely_cause} />
@@ -805,6 +910,71 @@ function IncidentsPanel({ incidents }: { incidents: IncidentRecord[] }) {
               </div>
             )
           })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Raw Port Metrics Panel ────────────────────────────────────────────────────
+
+function RawPortMetricsPanel({ metrics }: { metrics: InvestigateMetrics }) {
+  const [open, setOpen] = useState(false)
+  const rows = metrics.raw_port_metrics ?? []
+
+  return (
+    <div className="card" style={{ padding: 0 }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        style={{
+          width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '12px 20px', background: 'none', border: 'none', cursor: 'pointer',
+          borderBottom: open ? '1px solid var(--border)' : 'none',
+        }}
+      >
+        <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-dim)' }}>
+          Raw Data — last {rows.length} port_metrics rows
+        </span>
+        {open ? <ChevronUp size={14} color="var(--text-dim)" /> : <ChevronDown size={14} color="var(--text-dim)" />}
+      </button>
+
+      {open && (
+        <div style={{ overflow: 'auto' }}>
+          {rows.length === 0 ? (
+            <p style={{ padding: '16px 20px', color: 'var(--text-dim)', fontSize: 12, margin: 0, fontStyle: 'italic' }}>
+              No port metrics rows for this device
+            </p>
+          ) : (
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead>
+                <tr style={{ borderBottom: '1px solid var(--border)' }}>
+                  {['Timestamp', 'RX Errors', 'RX Dropped', 'RX Frags', 'RX Bytes', 'TX Bytes', 'Error Rate %'].map(h => (
+                    <th key={h} style={{ padding: '7px 12px', textAlign: 'left', fontSize: 10, fontWeight: 700, letterSpacing: '0.06em', color: 'var(--text-dim)', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r, i) => {
+                  const rateColor = r.error_rate_pct > 0.1 ? '#ef4444' : r.error_rate_pct > 0.001 ? '#eab308' : 'var(--text-dim)'
+                  return (
+                    <tr key={i} style={{ borderBottom: '1px solid var(--border-dim)' }}>
+                      <td style={{ padding: '5px 12px', fontFamily: 'monospace', fontSize: 11, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>
+                        {new Date(r.timestamp).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                      </td>
+                      <td style={{ padding: '5px 12px', color: r.rx_errors > 0 ? '#ef4444' : 'var(--text-dim)', fontWeight: r.rx_errors > 0 ? 700 : 400 }}>{r.rx_errors.toLocaleString()}</td>
+                      <td style={{ padding: '5px 12px', color: r.rx_dropped > 0 ? '#f97316' : 'var(--text-dim)', fontWeight: r.rx_dropped > 0 ? 700 : 400 }}>{r.rx_dropped.toLocaleString()}</td>
+                      <td style={{ padding: '5px 12px', color: r.rx_frags > 0 ? '#eab308' : 'var(--text-dim)', fontWeight: r.rx_frags > 0 ? 700 : 400 }}>{r.rx_frags.toLocaleString()}</td>
+                      <td style={{ padding: '5px 12px', color: 'var(--text)', fontFamily: 'monospace' }}>{fmt(r.rx_bytes)}</td>
+                      <td style={{ padding: '5px 12px', color: 'var(--text)', fontFamily: 'monospace' }}>{fmt(r.tx_bytes)}</td>
+                      <td style={{ padding: '5px 12px', fontFamily: 'monospace', color: rateColor, fontWeight: r.error_rate_pct > 0.001 ? 700 : 400 }}>
+                        {r.error_rate_pct.toFixed(6)}%
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          )}
         </div>
       )}
     </div>
@@ -1237,12 +1407,13 @@ ${tl.length === 0 ? '<p>No events in selected period.</p>' : `
             </button>
           </div>
 
-          <DevicePanel    ip={selectedIp} inv={invData} detail={devDetail} />
-          <DiagnosisPanel hypothesis={invData.hypothesis} />
-          <TimelinePanel  timeline={invData.timeline} />
-          <MetricsPanel   metrics={invData.metrics} detail={devDetail} />
-          <FlowsPanel     ip={selectedIp} flows={flows} />
-          <IncidentsPanel incidents={incidents} />
+          <DevicePanel           ip={selectedIp} inv={invData} detail={devDetail} />
+          <DiagnosisPanel        hypothesis={invData.hypothesis} metrics={invData.metrics} />
+          <TimelinePanel         timeline={invData.timeline} />
+          <MetricsPanel          metrics={invData.metrics} detail={devDetail} />
+          <FlowsPanel            ip={selectedIp} flows={flows} />
+          <IncidentsPanel        incidents={incidents} />
+          <RawPortMetricsPanel   metrics={invData.metrics} />
         </>
       )}
     </div>

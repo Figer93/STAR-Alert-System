@@ -251,12 +251,21 @@ class TimelineEvent(BaseModel):
 class InvestigateMetrics(BaseModel):
     port_rx_errors: int
     port_tx_errors: int
+    port_rx_dropped: int = 0
+    port_tx_dropped: int = 0
+    port_rx_frags: int = 0
+    error_rate_pct: float = 0.0
+    error_timeline_profile: str = "normal"   # "sustained" | "single_spike" | "normal"
+    error_windows_with_errors: int = 0       # of last 12 five-min windows, how many had errors
+    peer_avg_error_rate: Optional[float] = None
+    peer_comparison_result: str = "no_peer_data"  # "normal"|"elevated"|"highly_elevated"|"no_peer_data"
     avg_packet_loss_gateway_pct: float
     avg_packet_loss_wan_pct: float
     avg_rtt_gateway_ms: Optional[float]
     bytes_sent: int
     bytes_received: int
     top_destinations: list[dict[str, Any]]
+    raw_port_metrics: list[dict[str, Any]] = []
 
 
 class Hypothesis(BaseModel):
@@ -474,37 +483,88 @@ def _health_score(
 def _compute_hypothesis(
     port_rx_errors: int,
     port_tx_errors: int,
+    error_rate_pct: float,
+    error_timeline: str,
+    peer_comparison: str,
+    port_rx_dropped: int,
+    port_rx_frags: int,
     gateway_loss: float,
     wan_loss: float,
     has_wired_port: bool,
     has_collab_traffic: bool,
 ) -> Hypothesis:
-    evidence: list[str] = []
+    """
+    Compute a diagnosis hypothesis.
 
-    # Rule 1: port errors + gateway loss → cable/NIC (high confidence)
-    if port_rx_errors > 50 and gateway_loss > 2.0:
+    The cable/NIC rules now use error_rate_pct (thresholds: 0.001% low, 0.1% medium/high)
+    and adjust confidence based on timeline profile (sustained vs spike) and peer
+    comparison (is this port anomalous vs other ports on the same switch?).
+    """
+
+    # ── Helper: build error evidence bullets ──────────────────────────────────
+    def _error_evidence() -> list[str]:
+        ev: list[str] = []
+        ev.append(f"RX error rate: {error_rate_pct:.4f}% ({port_rx_errors:,} errors)")
+        if port_rx_dropped > 0:
+            ev.append(f"RX dropped frames: {port_rx_dropped:,}")
+        if port_rx_frags > 0:
+            ev.append(f"RX fragmented frames: {port_rx_frags:,}")
+        if error_timeline == "sustained":
+            ev.append("Timeline: errors present in 6+ of the last 12 windows (sustained issue)")
+        elif error_timeline == "single_spike":
+            ev.append("Timeline: errors concentrated in 1-2 windows (single spike, lower reliability)")
+        if peer_comparison == "highly_elevated":
+            ev.append("Peer comparison: error rate is >10x higher than other ports on this switch")
+        elif peer_comparison == "elevated":
+            ev.append("Peer comparison: error rate is 2-10x higher than other ports on this switch")
+        elif peer_comparison == "normal":
+            ev.append("Peer comparison: error rate is similar to other ports on this switch")
+        return ev
+
+    # ── Helper: adjust confidence for cable/NIC ───────────────────────────────
+    def _cable_confidence(base: str) -> str:
+        """Upgrade or downgrade based on timeline and peer comparison."""
+        score = {"high": 2, "medium": 1, "low": 0}[base]
+
+        # Timeline adjustments
+        if error_timeline == "single_spike":
+            score -= 1  # Spike: reduce confidence
+        elif error_timeline == "sustained":
+            score += 1  # Sustained: increase confidence
+
+        # Peer adjustments
+        if peer_comparison == "highly_elevated":
+            score += 1
+        elif peer_comparison == "normal":
+            score -= 1  # Not anomalous vs peers → less certain
+
+        score = max(0, min(2, score))
+        return ["low", "medium", "high"][score]
+
+    # ── Cable/NIC rules (now error-rate based) ────────────────────────────────
+
+    # Rule 1: meaningful error rate AND gateway loss → cable/NIC
+    if error_rate_pct > 0.001 and gateway_loss > 2.0:
+        base = "high" if error_rate_pct > 0.1 else "medium"
+        conf = _cable_confidence(base)
         return Hypothesis(
             likely_cause="cable_or_nic",
-            confidence="high",
-            evidence=[
-                f"Port RX errors in window: {port_rx_errors}",
-                f"Gateway packet loss: {gateway_loss:.1f}%",
-            ],
+            confidence=conf,
+            evidence=_error_evidence() + [f"Gateway packet loss: {gateway_loss:.1f}%"],
             recommended_action=(
                 "Check physical cable connection and NIC driver. "
                 "Replace cable if errors persist after re-seat."
             ),
         )
 
-    # Rule 2: port errors but gateway healthy → local cable/NIC (medium)
-    if port_rx_errors > 50 and gateway_loss < 1.0:
+    # Rule 2: error rate but gateway healthy → local cable/NIC
+    if error_rate_pct > 0.001 and gateway_loss < 1.0:
+        base = "medium" if error_rate_pct > 0.1 else "low"
+        conf = _cable_confidence(base)
         return Hypothesis(
             likely_cause="cable_or_nic",
-            confidence="medium",
-            evidence=[
-                f"Port RX errors in window: {port_rx_errors}",
-                f"Gateway reachable (loss: {gateway_loss:.1f}%)",
-            ],
+            confidence=conf,
+            evidence=_error_evidence() + [f"Gateway reachable (loss: {gateway_loss:.1f}%)"],
             recommended_action=(
                 "Inspect cable and NIC. Gateway is reachable so this is "
                 "likely a local layer-1 fault on this specific port."
@@ -543,7 +603,7 @@ def _compute_hypothesis(
 
     # Rule 5: all clean + collaboration traffic → server-side issue (medium)
     if (gateway_loss < 1.0 and wan_loss < 1.0
-            and port_rx_errors == 0 and has_collab_traffic):
+            and error_rate_pct < 0.001 and has_collab_traffic):
         return Hypothesis(
             likely_cause="server_side",
             confidence="medium",
@@ -574,7 +634,7 @@ def _compute_hypothesis(
 
     # Rule 7: all normal → healthy (high)
     if (gateway_loss < 1.0 and wan_loss < 1.0
-            and port_rx_errors == 0 and port_tx_errors == 0):
+            and error_rate_pct < 0.001 and port_tx_errors == 0):
         return Hypothesis(
             likely_cause="healthy",
             confidence="high",
@@ -586,7 +646,7 @@ def _compute_hypothesis(
     return Hypothesis(
         likely_cause="unknown",
         confidence="low",
-        evidence=evidence or ["Insufficient data to determine cause"],
+        evidence=["Insufficient data to determine cause"],
         recommended_action=(
             "Gather more data. Check pfSense logs and switch port counters manually."
         ),
@@ -1385,7 +1445,7 @@ async def investigate(
                 port_rx_errors=0, port_tx_errors=0,
                 avg_packet_loss_gateway_pct=0.0, avg_packet_loss_wan_pct=0.0,
                 avg_rtt_gateway_ms=None, bytes_sent=0, bytes_received=0,
-                top_destinations=[],
+                top_destinations=[], raw_port_metrics=[],
             ),
             hypothesis=Hypothesis(
                 likely_cause="unknown", confidence="low",
@@ -1403,17 +1463,133 @@ async def investigate(
         "FROM device_registry WHERE ip::text = :ip", {"ip": ip})
     device = dev_rows[0] if dev_rows else None
 
-    # Port error totals in window
+    # Port error totals + breakdown in window
     port_err_rows = await _exec(db, """
-        SELECT COALESCE(SUM(rx_errors), 0) AS rx_errors,
-               COALESCE(SUM(tx_errors), 0) AS tx_errors
+        SELECT COALESCE(SUM(rx_errors),  0) AS rx_errors,
+               COALESCE(SUM(tx_errors),  0) AS tx_errors,
+               COALESCE(SUM(rx_dropped), 0) AS rx_dropped,
+               COALESCE(SUM(tx_dropped), 0) AS tx_dropped,
+               COALESCE(SUM(rx_frags),   0) AS rx_frags,
+               COALESCE(SUM(rx_bytes),   0) AS rx_bytes
         FROM switch_port_metrics
         WHERE device_ip::text = :ip
           AND time BETWEEN :start AND :end
     """, params)
     port_rx_errors = int((port_err_rows[0] or {}).get("rx_errors") or 0)
     port_tx_errors = int((port_err_rows[0] or {}).get("tx_errors") or 0)
-    has_wired_port = bool(port_err_rows and port_err_rows[0].get("rx_errors") is not None)
+    port_rx_dropped = int((port_err_rows[0] or {}).get("rx_dropped") or 0)
+    port_tx_dropped = int((port_err_rows[0] or {}).get("tx_dropped") or 0)
+    port_rx_frags   = int((port_err_rows[0] or {}).get("rx_frags")   or 0)
+    port_rx_bytes   = int((port_err_rows[0] or {}).get("rx_bytes")   or 0)
+    has_wired_port  = bool(port_err_rows and port_err_rows[0].get("rx_errors") is not None)
+
+    # Error rate calculation
+    if port_rx_bytes > 0:
+        error_rate_pct = (port_rx_errors / port_rx_bytes) * 100.0
+    else:
+        error_rate_pct = 0.0
+
+    # Error timeline profile — last 12 five-minute windows
+    timeline_rows = await _exec(db, """
+        SELECT
+            date_trunc('hour', time)
+              + (EXTRACT(MINUTE FROM time)::int / 5) * INTERVAL '5 minutes' AS bucket,
+            SUM(rx_errors) AS rx_errors
+        FROM switch_port_metrics
+        WHERE device_ip::text = :ip
+          AND time > NOW() - INTERVAL '60 minutes'
+        GROUP BY bucket
+        ORDER BY bucket DESC
+        LIMIT 12
+    """, {"ip": ip})
+    windows_with_errors = sum(1 for r in timeline_rows if int(r.get("rx_errors") or 0) > 0)
+    total_windows = len(timeline_rows)
+
+    if total_windows == 0:
+        error_timeline = "normal"
+    elif windows_with_errors >= 6:
+        error_timeline = "sustained"
+    elif windows_with_errors <= 2 and windows_with_errors > 0:
+        error_timeline = "single_spike"
+    else:
+        error_timeline = "normal"
+
+    # Peer comparison — compare this port's error rate to others on same switch
+    peer_avg_error_rate: Optional[float] = None
+    peer_comparison_result = "no_peer_data"
+
+    if device and device.get("switch_id"):
+        switch_id_val = device["switch_id"]
+        port_id_val   = device.get("port_id")
+        peer_rows = await _exec(db, """
+            SELECT
+                port_id,
+                CASE
+                    WHEN SUM(rx_bytes) > 0
+                    THEN (SUM(rx_errors)::float / SUM(rx_bytes)) * 100
+                    ELSE 0
+                END AS port_error_rate
+            FROM switch_port_metrics
+            WHERE switch_id = :switch_id
+              AND time BETWEEN :start AND :end
+              AND (rx_bytes IS NOT NULL OR rx_errors IS NOT NULL)
+            GROUP BY port_id
+        """, {"switch_id": switch_id_val, "start": start, "end": end})
+
+        peer_rates = [
+            float(r["port_error_rate"])
+            for r in peer_rows
+            if r.get("port_id") != port_id_val
+        ]
+        if peer_rates:
+            peer_avg_error_rate = sum(peer_rates) / len(peer_rates)
+            if error_rate_pct > 0 and peer_avg_error_rate > 0:
+                ratio = error_rate_pct / peer_avg_error_rate
+                if ratio > 10:
+                    peer_comparison_result = "highly_elevated"
+                elif ratio > 2:
+                    peer_comparison_result = "elevated"
+                else:
+                    peer_comparison_result = "normal"
+            elif error_rate_pct > 0 and peer_avg_error_rate == 0:
+                peer_comparison_result = "highly_elevated"
+            else:
+                peer_comparison_result = "normal"
+        elif peer_rows:
+            # Only this port has data → no comparison possible
+            peer_comparison_result = "no_peer_data"
+
+    # Raw port metrics — last 20 rows for this device
+    raw_metrics_rows = await _exec(db, """
+        SELECT
+            time,
+            rx_errors,
+            rx_dropped,
+            rx_frags,
+            rx_bytes,
+            tx_bytes,
+            CASE
+                WHEN rx_bytes > 0
+                THEN ROUND((rx_errors::numeric / rx_bytes * 100)::numeric, 6)
+                ELSE 0
+            END AS error_rate_pct
+        FROM switch_port_metrics
+        WHERE device_ip::text = :ip
+        ORDER BY time DESC
+        LIMIT 20
+    """, {"ip": ip})
+    raw_port_metrics = [
+        {
+            "timestamp":    r["time"].isoformat() if isinstance(r["time"], datetime) else str(r["time"]),
+            "rx_errors":    int(r.get("rx_errors")   or 0),
+            "rx_dropped":   int(r.get("rx_dropped")  or 0),
+            "rx_frags":     int(r.get("rx_frags")    or 0),
+            "rx_bytes":     int(r.get("rx_bytes")    or 0),
+            "tx_bytes":     int(r.get("tx_bytes")    or 0),
+            "error_rate_pct": float(r.get("error_rate_pct") or 0),
+        }
+        for r in raw_metrics_rows
+    ]
 
     # Gateway latency in window
     gw_rows = await _exec(db, """
@@ -1565,16 +1741,30 @@ async def investigate(
         metrics=InvestigateMetrics(
             port_rx_errors=port_rx_errors,
             port_tx_errors=port_tx_errors,
+            port_rx_dropped=port_rx_dropped,
+            port_tx_dropped=port_tx_dropped,
+            port_rx_frags=port_rx_frags,
+            error_rate_pct=round(error_rate_pct, 6),
+            error_timeline_profile=error_timeline,
+            error_windows_with_errors=windows_with_errors,
+            peer_avg_error_rate=round(peer_avg_error_rate, 6) if peer_avg_error_rate is not None else None,
+            peer_comparison_result=peer_comparison_result,
             avg_packet_loss_gateway_pct=round(gateway_loss, 2),
             avg_packet_loss_wan_pct=round(wan_loss, 2),
             avg_rtt_gateway_ms=round(float(gateway_rtt), 2) if gateway_rtt is not None else None,
             bytes_sent=bytes_sent,
             bytes_received=bytes_received,
             top_destinations=top_dest_fmt,
+            raw_port_metrics=raw_port_metrics,
         ),
         hypothesis=_compute_hypothesis(
             port_rx_errors=port_rx_errors,
             port_tx_errors=port_tx_errors,
+            error_rate_pct=error_rate_pct,
+            error_timeline=error_timeline,
+            peer_comparison=peer_comparison_result,
+            port_rx_dropped=port_rx_dropped,
+            port_rx_frags=port_rx_frags,
             gateway_loss=gateway_loss,
             wan_loss=wan_loss,
             has_wired_port=has_wired_port,
