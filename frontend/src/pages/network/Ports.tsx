@@ -223,11 +223,11 @@ function SwitchDiagram({
                       top:          2,
                       left:         '50%',
                       transform:    'translateX(-50%)',
-                      width:        3,
-                      height:       3,
+                      width:        4,
+                      height:       4,
                       borderRadius: '50%',
                       background:   color,
-                      boxShadow:    `0 0 3px ${color}`,
+                      boxShadow:    `0 0 6px ${color}, 0 0 3px ${color}`,
                     }} />
                   )}
                 </div>
