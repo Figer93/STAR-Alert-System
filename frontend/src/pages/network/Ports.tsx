@@ -182,13 +182,14 @@ function SwitchDiagram({
         background:   'var(--bg-raised)',
         border:       '1px solid var(--border-bright)',
         borderRadius: 5,
-        padding:      '14px 20px',
+        padding:      '16px',
+        minHeight:    120,
         display:      'flex',
         flexDirection:'column',
-        gap:          6,
+        gap:          2,
       }}>
         {rows.map((row, ri) => (
-          <div key={ri} style={{ display: 'flex', gap: 5, alignItems: 'flex-end' }}>
+          <div key={ri} style={{ display: 'flex', gap: 2, alignItems: 'flex-end' }}>
             {row.map(slot => {
               const p      = slotMap.get(slot)
               const status = p?.status ?? 'empty'
@@ -204,8 +205,8 @@ function SwitchDiagram({
                   onMouseMove={e  => p && tip && setTip({ port: p, x: e.clientX, y: e.clientY })}
                   onMouseLeave={() => setTip(null)}
                   style={{
-                    width:       9,
-                    height:      26,
+                    width:       10,
+                    height:      32,
                     borderRadius: 2,
                     background:  active ? color : status === 'empty' ? color : `${color}55`,
                     border:      `1px solid ${active ? color : `${color}44`}`,
@@ -223,11 +224,13 @@ function SwitchDiagram({
                       top:          2,
                       left:         '50%',
                       transform:    'translateX(-50%)',
-                      width:        4,
-                      height:       4,
+                      width:        5,
+                      height:       5,
                       borderRadius: '50%',
-                      background:   color,
-                      boxShadow:    `0 0 6px ${color}, 0 0 3px ${color}`,
+                      background:   status === 'healthy' ? '#22c55e' : color,
+                      boxShadow:    status === 'healthy'
+                        ? '0 0 8px #22c55e, 0 0 16px #22c55e'
+                        : `0 0 8px ${color}, 0 0 16px ${color}`,
                     }} />
                   )}
                 </div>

@@ -283,7 +283,7 @@ function StatsCard({ stat }: { stat: TargetStats }) {
     <div style={{
       flex:         '1 1 160px',
       background:   'var(--bg-surface)',
-      border:       `1px solid var(--border)`,
+      border:       `1px solid ${stat.color}4d`,
       borderTop:    `2px solid ${stat.color}`,
       borderRadius: 'var(--radius)',
       padding:      '12px 14px',
@@ -303,14 +303,19 @@ function StatsCard({ stat }: { stat: TargetStats }) {
       {stat.status === 'no-data' ? (
         <p style={{ color: 'var(--text-dim)', fontSize: 11, margin: 0 }}>No data</p>
       ) : (
+        <>
+        <div style={{ marginBottom: 8 }}>
+          <p style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.12em', color: 'var(--text-dim)', margin: '0 0 3px' }}>Avg RTT</p>
+          <p style={{ fontSize: 20, fontWeight: 500, fontFamily: 'JetBrains Mono, monospace', color: stat.color, margin: 0, lineHeight: 1 }}>{fmtRtt(stat.avgRtt)}</p>
+        </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 12px' }}>
-          <StatItem label="Avg RTT"  value={fmtRtt(stat.avgRtt)}           color={stat.color} />
           <StatItem label="P95 RTT"  value={fmtRtt(stat.p95Rtt)}           />
           <StatItem label="Max RTT"  value={fmtRtt(stat.maxRtt)}           color={stat.maxRtt != null && stat.maxRtt > 150 ? '#ef4444' : undefined} />
           <StatItem label="Loss"     value={stat.avgLoss != null ? `${stat.avgLoss.toFixed(1)}%` : '—'}
                                      color={stat.avgLoss != null && stat.avgLoss > 0 ? '#ef4444' : undefined} />
           <StatItem label="Uptime"   value={`${stat.uptime.toFixed(1)}%`}  color={stat.uptime < 99 ? '#eab308' : '#22c55e'} />
         </div>
+        </>
       )}
     </div>
   )
