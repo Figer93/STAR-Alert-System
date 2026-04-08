@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time as _time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, Optional
 
@@ -34,6 +35,18 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/network", tags=["network"])
 
 _IS_POSTGRES = "postgresql" in settings.DATABASE_URL
+
+# ── In-memory response caches ─────────────────────────────────────────────────
+# switch_id → switch_name; refreshed every 300 s (changes only when new switches
+# are added, so a stale read is harmless).
+_switch_names: dict[str, str | None] = {}
+_switch_names_ts: float = 0.0
+_SWITCH_NAMES_TTL = 300.0
+
+# /ports full response keyed by (switch_id, status); refreshed every 30 s.
+# Port error data is aggregated over 24 h — 30 s staleness is imperceptible.
+_ports_cache: dict[str, tuple[list, float]] = {}
+_PORTS_CACHE_TTL = 30.0
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -894,6 +907,12 @@ async def get_ports(
     if not _IS_POSTGRES:
         return []
 
+    cache_key = f"{switch_id}:{status}"
+    _now = _time.monotonic()
+    _cached = _ports_cache.get(cache_key)
+    if _cached and (_now - _cached[1]) < _PORTS_CACHE_TTL:
+        return _cached[0]
+
     switch_filter = "AND switch_id = :switch_id" if switch_id else ""
     params = {"switch_id": switch_id} if switch_id else {}
 
@@ -1036,6 +1055,7 @@ async def get_ports(
             throughput_1h=tput_map.get(key, []),
         ))
 
+    _ports_cache[cache_key] = (result, _time.monotonic())
     return result
 
 
@@ -1118,22 +1138,33 @@ async def get_flows(
 @router.get("/devices", response_model=list[DeviceRow])
 async def list_devices(db: AsyncSession = Depends(get_db)):
     """List all known devices from device_registry, newest first.
-    Joins with switch_port_metrics to resolve switch_name from the switch MAC."""
-    rows = await _exec(db, """
-        SELECT
-            d.ip::text AS ip, d.mac, d.hostname, d.switch_id,
-            spm.switch_name,
-            d.port_id, d.last_seen, d.first_seen, d.is_online,
-            d.device_type, d.notes
-        FROM device_registry d
-        LEFT JOIN (
+    switch_name is resolved from a 300-second in-memory cache of the
+    DISTINCT ON (switch_id) subquery, avoiding a full switch_port_metrics
+    scan on every request."""
+    global _switch_names, _switch_names_ts
+
+    now = _time.monotonic()
+    if not _switch_names or (now - _switch_names_ts) >= _SWITCH_NAMES_TTL:
+        name_rows = await _exec(db, """
             SELECT DISTINCT ON (switch_id) switch_id, switch_name
             FROM switch_port_metrics
             ORDER BY switch_id, time DESC
-        ) spm ON spm.switch_id = d.switch_id
+        """)
+        _switch_names = {r["switch_id"]: r.get("switch_name") for r in name_rows}
+        _switch_names_ts = now
+
+    rows = await _exec(db, """
+        SELECT
+            d.ip::text AS ip, d.mac, d.hostname, d.switch_id,
+            d.port_id, d.last_seen, d.first_seen, d.is_online,
+            d.device_type, d.notes
+        FROM device_registry d
         ORDER BY d.last_seen DESC NULLS LAST
     """)
-    return [DeviceRow(**r) for r in rows]
+    return [
+        DeviceRow(**{**r, "switch_name": _switch_names.get(r["switch_id"])})
+        for r in rows
+    ]
 
 
 @router.patch("/devices/{ip:path}", response_model=DeviceRow)
