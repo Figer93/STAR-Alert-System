@@ -43,6 +43,31 @@ _switch_names: dict[str, str | None] = {}
 _switch_names_ts: float = 0.0
 _SWITCH_NAMES_TTL = 300.0
 
+
+async def warm_switch_names_cache() -> None:
+    """
+    Pre-populate the switch_names cache on startup so the first user request
+    never triggers an 18-second cold query against switch_port_metrics.
+    Called from main.py lifespan before the app begins serving traffic.
+    No-op on SQLite or if the table does not yet exist.
+    """
+    global _switch_names, _switch_names_ts
+    if not _IS_POSTGRES:
+        return
+    try:
+        from backend.database import AsyncSessionLocal
+        async with AsyncSessionLocal() as db:
+            name_rows = await _exec(db, """
+                SELECT DISTINCT ON (switch_id) switch_id, switch_name
+                FROM switch_port_metrics
+                ORDER BY switch_id, time DESC
+            """)
+        _switch_names = {r["switch_id"]: r.get("switch_name") for r in name_rows}
+        _switch_names_ts = _time.monotonic()
+        logger.info("switch_names cache pre-warmed: %d switch(es)", len(_switch_names))
+    except Exception:
+        logger.warning("switch_names cache pre-warm failed — first request will populate it")
+
 # /ports full response keyed by (switch_id, status); refreshed every 30 s.
 # Port error data is aggregated over 24 h — 30 s staleness is imperceptible.
 _ports_cache: dict[str, tuple[list, float]] = {}

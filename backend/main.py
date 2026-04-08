@@ -240,6 +240,13 @@ async def lifespan(app: FastAPI):
     await _seed_channel_settings()
     logger.info("Database initialised")
 
+    # Pre-warm caches before serving traffic
+    try:
+        from backend.routers.network import warm_switch_names_cache
+        await warm_switch_names_cache()
+    except Exception:
+        logger.exception("Cache pre-warm failed")
+
     # pfSense UDP syslog listener
     syslog_transport = None
     try:
