@@ -172,29 +172,37 @@ function SwitchDiagram({
 
   return (
     <div style={{
-      background: 'var(--bg-surface)',
-      border:     '1px solid var(--border)',
-      borderRadius: 6,
-      padding:    '16px 20px',
+      width:        '100%',
+      background:   '#0f0f12',
+      border:       '1px solid rgba(255,255,255,0.06)',
+      borderRadius: 8,
+      padding:      24,
     }}>
-      {/* Chassis */}
-      <div style={{
-        background:   'var(--bg-raised)',
-        border:       '1px solid var(--border-bright)',
-        borderRadius: 5,
-        padding:      '16px',
-        minHeight:    120,
-        display:      'flex',
-        flexDirection:'column',
-        gap:          2,
-      }}>
+      {/* Chassis rows */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {rows.map((row, ri) => (
-          <div key={ri} style={{ display: 'flex', gap: 2, alignItems: 'flex-end' }}>
+          <div key={ri} style={{ display: 'flex', gap: 3, alignItems: 'center' }}>
             {row.map(slot => {
               const p      = slotMap.get(slot)
               const status = p?.status ?? 'empty'
               const color  = STATUS_COLORS[status]
               const active = p?.port_id === selected
+
+              const ledBg: string = {
+                healthy: '#22c55e',
+                error:   '#ef4444',
+                warning: '#f59e0b',
+                empty:   '#3f3f46',
+                uplink:  '#60a5fa',
+              }[status]
+
+              const ledShadow: string = {
+                healthy: '0 0 6px #22c55e, 0 0 12px #22c55e40',
+                error:   '0 0 6px #ef4444',
+                warning: '0 0 6px #f59e0b',
+                uplink:  '0 0 6px #60a5fa',
+                empty:   'none',
+              }[status]
 
               return (
                 <div
@@ -205,38 +213,59 @@ function SwitchDiagram({
                   onMouseMove={e  => p && tip && setTip({ port: p, x: e.clientX, y: e.clientY })}
                   onMouseLeave={() => setTip(null)}
                   style={{
-                    width:       10,
-                    height:      32,
-                    borderRadius: 2,
-                    background:  active ? color : status === 'empty' ? color : `${color}55`,
-                    border:      `1px solid ${active ? color : `${color}44`}`,
-                    cursor:      p ? 'pointer' : 'default',
-                    transition:  'background 0.1s, box-shadow 0.1s',
-                    boxShadow:   active ? `0 0 6px ${color}99` : 'none',
-                    flexShrink:  0,
-                    position:    'relative',
+                    width:        14,
+                    height:       44,
+                    borderRadius: 3,
+                    background:   status === 'empty' ? '#1c1c1f' : active ? color : `${color}33`,
+                    border:       `1px solid ${active ? color : `${color}55`}`,
+                    outline:      active ? '1px solid #60a5fa' : 'none',
+                    outlineOffset: active ? 2 : 0,
+                    cursor:       p ? 'pointer' : 'default',
+                    transition:   'filter 0.1s',
+                    filter:       'brightness(1)',
+                    flexShrink:   0,
+                    position:     'relative',
+                    display:      'flex',
+                    flexDirection:'column',
+                    alignItems:   'center',
+                    justifyContent: 'space-between',
+                    paddingBottom: 3,
                   }}
+                  onMouseOver={e => { if (p) (e.currentTarget as HTMLDivElement).style.filter = 'brightness(1.3)' }}
+                  onMouseOut={e  => { (e.currentTarget as HTMLDivElement).style.filter = 'brightness(1)' }}
                 >
-                  {/* Activity LED at top */}
-                  {p && status !== 'empty' && (
-                    <div style={{
-                      position:     'absolute',
-                      top:          2,
-                      left:         '50%',
-                      transform:    'translateX(-50%)',
-                      width:        5,
-                      height:       5,
-                      borderRadius: '50%',
-                      background:   status === 'healthy' ? '#22c55e' : color,
-                      boxShadow:    status === 'healthy'
-                        ? '0 0 8px #22c55e, 0 0 16px #22c55e'
-                        : `0 0 8px ${color}, 0 0 16px ${color}`,
-                    }} />
-                  )}
+                  {/* LED dot */}
+                  <div style={{
+                    width:        6,
+                    height:       6,
+                    borderRadius: '50%',
+                    marginTop:    4,
+                    background:   ledBg,
+                    boxShadow:    ledShadow,
+                    flexShrink:   0,
+                  }} />
+                  {/* Port number */}
+                  <span style={{
+                    fontSize:   8,
+                    fontFamily: 'monospace',
+                    color:      'rgba(255,255,255,0.3)',
+                    lineHeight: 1,
+                    userSelect: 'none',
+                  }}>
+                    {slot}
+                  </span>
                 </div>
               )
             })}
-            <span style={{ fontSize: 9, color: 'var(--text-dim)', marginLeft: 4, lineHeight: 1, alignSelf: 'center' }}>
+            {/* Row label */}
+            <span style={{
+              fontSize:   10,
+              color:      '#52525b',
+              marginLeft: 6,
+              lineHeight: 1,
+              flexShrink: 0,
+              userSelect: 'none',
+            }}>
               {ri * PORTS_PER_ROW + 1}–{Math.min((ri + 1) * PORTS_PER_ROW, total)}
             </span>
           </div>
