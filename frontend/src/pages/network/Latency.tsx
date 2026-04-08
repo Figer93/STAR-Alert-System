@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Activity, Download } from 'lucide-react'
 import {
-  ComposedChart, Line, Area, XAxis, YAxis, CartesianGrid,
+  ComposedChart, Line, XAxis, YAxis, CartesianGrid,
   Tooltip as ReTooltip, ReferenceLine, Brush, ResponsiveContainer,
 } from 'recharts'
 
@@ -770,27 +770,26 @@ export default function NetworkLatency() {
                   <YAxis
                     yAxisId="rtt"
                     orientation="left"
-                    tick={{ fontSize: 10, fill: 'var(--text-dim)' }}
+                    tick={{ fontSize: 9, fill: 'var(--text-dim)', fontFamily: 'JetBrains Mono, monospace' }}
                     tickFormatter={v => `${v}ms`}
                     width={52}
                     allowDecimals={false}
                   />
 
-                  {/* Right axis: loss % */}
+                  {/* Right axis: hidden (loss no longer shown as area) */}
                   <YAxis
                     yAxisId="loss"
                     orientation="right"
                     domain={[0, 100]}
-                    tick={{ fontSize: 10, fill: 'var(--text-dim)' }}
-                    tickFormatter={v => `${v}%`}
-                    width={40}
+                    tick={false}
+                    width={0}
                     allowDecimals={false}
                   />
 
                   <XAxis
                     dataKey="time"
                     tickFormatter={v => fmtTime(v, period)}
-                    tick={{ fontSize: 10, fill: 'var(--text-dim)' }}
+                    tick={{ fontSize: 9, fill: 'var(--text-dim)', fontFamily: 'JetBrains Mono, monospace' }}
                     minTickGap={60}
                   />
 
@@ -823,28 +822,14 @@ export default function NetworkLatency() {
                     label={{ value: '150ms', position: 'insideTopLeft', fontSize: 9, fill: '#ef4444' }}
                   />
 
-                  {/* Loss areas (behind RTT lines, right axis) */}
-                  {visibleTargets.map((t, i) => (
-                    <Area
-                      key={`${t}_loss`}
-                      yAxisId="loss"
-                      dataKey={`${sanitise(t)}_loss`}
-                      stroke="none"
-                      fill={TARGET_COLORS[i % TARGET_COLORS.length]}
-                      fillOpacity={0.1}
-                      connectNulls
-                      isAnimationActive={false}
-                    />
-                  ))}
-
-                  {/* RTT lines (primary) */}
+                  {/* RTT oscilloscope lines (1px, no fill) */}
                   {visibleTargets.map((t, i) => (
                     <Line
                       key={`${t}_rtt`}
                       yAxisId="rtt"
                       dataKey={`${sanitise(t)}_rtt`}
                       stroke={TARGET_COLORS[i % TARGET_COLORS.length]}
-                      strokeWidth={2}
+                      strokeWidth={1}
                       dot={false}
                       connectNulls
                       isAnimationActive={false}

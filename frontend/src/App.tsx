@@ -1,15 +1,17 @@
-import { BrowserRouter, Routes, Route, useNavigate } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, useNavigate, useLocation } from 'react-router-dom'
 import { useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react'
 import { Toaster, toast } from 'sonner'
-import Header from './components/layout/Header'
+import { AnimatePresence } from 'framer-motion'
+import { AppShell, RouteMotion } from './components/layout/AppShell'
+import { CommandPalette } from './components/CommandPalette'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { notificationService } from './lib/notifications'
 import type { WSMessage } from './types'
 
-const Dashboard    = lazy(() => import('./pages/Dashboard'))
-const AlertHistory = lazy(() => import('./pages/AlertHistory'))
-const Sources      = lazy(() => import('./pages/Sources'))
-const Settings     = lazy(() => import('./pages/Settings'))
+const Dashboard        = lazy(() => import('./pages/Dashboard'))
+const AlertHistory     = lazy(() => import('./pages/AlertHistory'))
+const Sources          = lazy(() => import('./pages/Sources'))
+const Settings         = lazy(() => import('./pages/Settings'))
 
 const NetworkOverview    = lazy(() => import('./pages/network/Overview'))
 const NetworkPorts       = lazy(() => import('./pages/network/Ports'))
@@ -20,8 +22,7 @@ const NetworkDevices     = lazy(() => import('./pages/network/Devices'))
 const NetworkSettings    = lazy(() => import('./pages/network/NetworkSettings'))
 const NetworkIncidents   = lazy(() => import('./pages/network/Incidents'))
 
-// ── Keyboard shortcuts (must be inside BrowserRouter for useNavigate) ─────────
-// G then O/P/L/T/I/D/N/S → navigate to Network sub-pages
+// ── Keyboard shortcuts (G+key navigation) ────────────────────────────────────
 function KeyboardShortcuts() {
   const navigate = useNavigate()
   const pending  = useRef('')
@@ -71,8 +72,34 @@ function KeyboardShortcuts() {
   return null
 }
 
+// ── Animated Routes ───────────────────────────────────────────────────────────
+function AnimatedRoutes() {
+  const location = useLocation()
+
+  return (
+    <AnimatePresence mode="wait" initial={false}>
+      <Routes location={location} key={location.pathname}>
+        <Route path="/"        element={<RouteMotion><Dashboard /></RouteMotion>} />
+        <Route path="/history" element={<RouteMotion><AlertHistory /></RouteMotion>} />
+        <Route path="/sources" element={<RouteMotion><Sources /></RouteMotion>} />
+        <Route path="/settings" element={<RouteMotion><Settings /></RouteMotion>} />
+        <Route path="/network"             element={<RouteMotion><NetworkOverview /></RouteMotion>} />
+        <Route path="/network/ports"       element={<RouteMotion><NetworkPorts /></RouteMotion>} />
+        <Route path="/network/latency"     element={<RouteMotion><NetworkLatency /></RouteMotion>} />
+        <Route path="/network/traffic"     element={<RouteMotion><NetworkTraffic /></RouteMotion>} />
+        <Route path="/network/investigate" element={<RouteMotion><NetworkInvestigate /></RouteMotion>} />
+        <Route path="/network/devices"     element={<RouteMotion><NetworkDevices /></RouteMotion>} />
+        <Route path="/network/incidents"   element={<RouteMotion><NetworkIncidents /></RouteMotion>} />
+        <Route path="/network/settings"    element={<RouteMotion><NetworkSettings /></RouteMotion>} />
+      </Routes>
+    </AnimatePresence>
+  )
+}
+
+// ── App ───────────────────────────────────────────────────────────────────────
 function App() {
-  const [wsConnected, setWsConnected] = useState(false)
+  const [wsConnected, setWsConnected]   = useState(false)
+  const [cmdOpen, setCmdOpen]           = useState(false)
   const wsRef       = useRef<WebSocket | null>(null)
   const retryTimer  = useRef<ReturnType<typeof setTimeout> | null>(null)
   const retryDelay  = useRef(1000)
@@ -116,7 +143,6 @@ function App() {
 
   useEffect(() => {
     connect()
-    // Request browser notification permission on first load
     notificationService.requestBrowserPermission()
     return () => {
       if (retryTimer.current) clearTimeout(retryTimer.current)
@@ -127,37 +153,26 @@ function App() {
   return (
     <ErrorBoundary>
       <BrowserRouter>
-        <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden' }}>
-          <KeyboardShortcuts />
-          <Header wsConnected={wsConnected} />
-          <main style={{ flex: 1, overflow: 'hidden' }}>
-            <Suspense fallback={null}>
-            <Routes>
-              <Route path="/"        element={<Dashboard />} />
-              <Route path="/history" element={<AlertHistory />} />
-              <Route path="/sources" element={<Sources />} />
-              <Route path="/settings" element={<Settings />} />
-              <Route path="/network"             element={<NetworkOverview />} />
-              <Route path="/network/ports"       element={<NetworkPorts />} />
-              <Route path="/network/latency"     element={<NetworkLatency />} />
-              <Route path="/network/traffic"     element={<NetworkTraffic />} />
-              <Route path="/network/investigate" element={<NetworkInvestigate />} />
-              <Route path="/network/devices"    element={<NetworkDevices />} />
-              <Route path="/network/incidents"  element={<NetworkIncidents />} />
-              <Route path="/network/settings"   element={<NetworkSettings />} />
-            </Routes>
+        <KeyboardShortcuts />
+        <AppShell
+          wsConnected={wsConnected}
+          onSearchOpen={() => setCmdOpen(true)}
+        >
+          <Suspense fallback={null}>
+            <AnimatedRoutes />
           </Suspense>
-          </main>
-        </div>
+        </AppShell>
+        <CommandPalette open={cmdOpen} onClose={() => setCmdOpen(false)} />
         <Toaster
           position="bottom-right"
           theme="dark"
           toastOptions={{
             style: {
               background: 'var(--bg-elevated)',
-              border:     '1px solid var(--border-bright)',
-              color:      'var(--text-head)',
-              fontSize:   '13px',
+              border: '1px solid var(--border-bright)',
+              color: 'var(--text-head)',
+              fontSize: '13px',
+              borderRadius: '5px',
             },
           }}
         />

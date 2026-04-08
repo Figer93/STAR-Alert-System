@@ -6,7 +6,7 @@ import {
   ExternalLink, Edit2, Check, X, Trash2, AlertTriangle,
   RefreshCw, Download,
 } from 'lucide-react'
-import { motion, AnimatePresence } from 'framer-motion'
+import { Drawer } from 'vaul'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -268,16 +268,18 @@ function StabilityTimeline({ events }: { events: TimelineEvent[] }) {
   )
 }
 
-// ── Side panel ─────────────────────────────────────────────────────────────────
+// ── Device Drawer (vaul) ──────────────────────────────────────────────────────
 
 function DevicePanel({
   ip,
-  onClose,
+  open,
+  onOpenChange,
   onUpdated,
   onForgotten,
 }: {
-  ip: string
-  onClose: () => void
+  ip: string | null
+  open: boolean
+  onOpenChange: (v: boolean) => void
   onUpdated: (d: DeviceRow) => void
   onForgotten: (ip: string) => void
 }) {
@@ -298,6 +300,7 @@ function DevicePanel({
 
   // Load detail + 24h timeline in parallel
   useEffect(() => {
+    if (!ip) return
     let cancelled = false
     setLoading(true)
     setDetail(null)
@@ -330,18 +333,10 @@ function DevicePanel({
     return () => { cancelled = true }
   }, [ip])
 
-  // Click-outside to close
-  useEffect(() => {
-    function handle(e: MouseEvent) {
-      if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
-        onClose()
-      }
-    }
-    document.addEventListener('mousedown', handle)
-    return () => document.removeEventListener('mousedown', handle)
-  }, [onClose])
+  // vaul handles click-outside
 
   async function handleSave() {
+    if (!ip) return
     setSaving(true)
     try {
       const res = await fetch(`${BASE}/devices/${encodeURIComponent(ip)}`, {
@@ -361,6 +356,7 @@ function DevicePanel({
   }
 
   async function handleForget() {
+    if (!ip) return
     setForgetting(true)
     try {
       const res = await fetch(`${BASE}/devices/${encodeURIComponent(ip)}`, { method: 'DELETE' })
@@ -375,24 +371,30 @@ function DevicePanel({
   const port = detail?.current_port_status
 
   return (
-    <motion.div
-      ref={panelRef}
-      initial={{ x: 420, opacity: 0 }}
-      animate={{ x: 0,   opacity: 1 }}
-      exit={{   x: 420, opacity: 0 }}
-      transition={{ type: 'spring', stiffness: 320, damping: 32 }}
-      style={{
-        position: 'fixed',
-        top: 0, right: 0, bottom: 0,
-        width: 400,
-        background: 'var(--bg-surface)',
-        borderLeft: '1px solid var(--border)',
-        display: 'flex',
-        flexDirection: 'column',
-        zIndex: 50,
-        overflow: 'hidden',
-      }}
-    >
+    <Drawer.Root open={open} onOpenChange={onOpenChange} direction="right">
+      <Drawer.Portal>
+        <Drawer.Overlay style={{
+          position: 'fixed', inset: 0,
+          background: 'rgba(0,0,0,0.5)',
+          backdropFilter: 'blur(2px)',
+          zIndex: 100,
+        }} />
+        <Drawer.Content
+          ref={panelRef}
+          style={{
+            position:      'fixed',
+            top:           0, right: 0, bottom: 0,
+            width:         400,
+            background:    'var(--bg-surface)',
+            borderLeft:    '1px solid var(--border-bright)',
+            display:       'flex',
+            flexDirection: 'column',
+            zIndex:        101,
+            overflow:      'hidden',
+            outline:       'none',
+            boxShadow:     '-12px 0 40px rgba(0,0,0,0.6)',
+          }}
+        >
       {/* Header */}
       <div style={{
         padding: '16px 20px',
@@ -411,7 +413,7 @@ function DevicePanel({
             <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{ip}</div>
           </div>
         </div>
-        <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 4 }}>
+        <button onClick={() => onOpenChange(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 4 }}>
           <X size={18} />
         </button>
       </div>
@@ -594,14 +596,14 @@ function DevicePanel({
         flexShrink: 0,
       }}>
         <button
-          onClick={() => navigate(`/network/investigate?ip=${encodeURIComponent(ip)}`)}
+          onClick={() => { if (ip) { navigate(`/network/investigate?ip=${encodeURIComponent(ip)}`); onOpenChange(false) } }}
           style={{
             width: '100%',
             padding: '10px',
             background: '#3b82f6',
             border: '1px solid #3b82f6',
             color: '#fff',
-            borderRadius: 7,
+            borderRadius: 5,
             cursor: 'pointer',
             fontSize: 13,
             fontWeight: 600,
@@ -615,7 +617,9 @@ function DevicePanel({
           <ExternalLink size={14} /> Investigate
         </button>
       </div>
-    </motion.div>
+        </Drawer.Content>
+      </Drawer.Portal>
+    </Drawer.Root>
   )
 }
 
@@ -1112,18 +1116,14 @@ export default function Devices() {
         </div>
       )}
 
-      {/* Side panel */}
-      <AnimatePresence>
-        {selectedIp && (
-          <DevicePanel
-            key={selectedIp}
-            ip={selectedIp}
-            onClose={() => setSelectedIp(null)}
-            onUpdated={handleUpdated}
-            onForgotten={handleForgotten}
-          />
-        )}
-      </AnimatePresence>
+      {/* Device drawer */}
+      <DevicePanel
+        ip={selectedIp}
+        open={selectedIp !== null}
+        onOpenChange={v => { if (!v) setSelectedIp(null) }}
+        onUpdated={handleUpdated}
+        onForgotten={handleForgotten}
+      />
     </div>
     </div>
   )
