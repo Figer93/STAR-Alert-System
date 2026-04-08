@@ -300,11 +300,36 @@ async def _create_incident(
 
 
 async def _resolve_incident(db: AsyncSession, incident_id: str) -> None:
-    """Set resolved_at = NOW() on the given incident and commit."""
+    """Set resolved_at = NOW() on a single incident and commit."""
     await _exec(db,
-        "UPDATE network_incidents SET resolved_at = NOW() WHERE id::text = :id",
+        "UPDATE network_incidents SET resolved_at = NOW() WHERE id = :id::uuid",
         {"id": incident_id})
     await db.commit()
+
+
+async def _resolve_incidents_batch(db: AsyncSession, incident_ids: list[str]) -> None:
+    """
+    Resolve multiple incidents in a single UPDATE ... WHERE id = ANY(:ids::uuid[]).
+
+    Uses a typed ARRAY bindparam so asyncpg receives a properly typed uuid[]
+    without needing to embed values in the SQL string.
+    Falls back to individual resolves if the array approach fails (e.g. on SQLite).
+    """
+    if not incident_ids:
+        return
+    from sqlalchemy import bindparam
+    from sqlalchemy.dialects.postgresql import ARRAY, UUID as PGUUID
+    try:
+        stmt = text(
+            "UPDATE network_incidents SET resolved_at = NOW() WHERE id = ANY(:ids)"
+        ).bindparams(bindparam("ids", type_=ARRAY(PGUUID(as_uuid=False))))
+        await db.execute(stmt, {"ids": incident_ids})
+        await db.commit()
+    except Exception:
+        logger.exception("Batch incident resolve failed — falling back to individual resolves")
+        await db.rollback()
+        for incident_id in incident_ids:
+            await _resolve_incident(db, incident_id)
 
 
 # ── Individual checks ─────────────────────────────────────────────────────────
@@ -367,18 +392,22 @@ async def _check_interface_errors(db: AsyncSession) -> None:
 
     erroring_keys = {(r["switch_id"], r["port_id"]) for r in error_ports}
 
-    # Auto-resolve ports that are no longer erroring
+    # Auto-resolve ports that are no longer erroring — batch all resolves into one UPDATE
     open_incs = await _exec(db, """
         SELECT id::text AS id, title, affected_switch, affected_port
         FROM network_incidents
         WHERE category = 'interface_error' AND resolved_at IS NULL
     """)
-    for inc in open_incs:
-        key = (inc.get("affected_switch"), inc.get("affected_port"))
-        if key not in erroring_keys:
-            await _resolve_incident(db, inc["id"])
+    to_resolve = [
+        inc for inc in open_incs
+        if (inc.get("affected_switch"), inc.get("affected_port")) not in erroring_keys
+    ]
+    if to_resolve:
+        await _resolve_incidents_batch(db, [inc["id"] for inc in to_resolve])
+        for inc in to_resolve:
             await _send_telegram(f"✅ Resolved: {inc['title']}")
-            logger.info("Interface error resolved: %s / %s", *key)
+            logger.info("Interface error resolved: %s / %s",
+                        inc.get("affected_switch"), inc.get("affected_port"))
 
     # Open new incidents for newly erroring ports
     for row in error_ports:
@@ -516,14 +545,15 @@ async def _check_devices_offline(db: AsyncSession) -> None:
             f"AND last_seen > NOW() - INTERVAL '{_DEVICE_STALE_MINUTES} minutes'")
         fresh_online_ips: set[str] = {r["ip"] for r in fresh_rows}
 
-        for inc in open_incs:
-            ip = inc.get("affected_ip")
-            if not ip:
-                continue
-            if ip in fresh_online_ips:
-                await _resolve_incident(db, inc["id"])
+        to_resolve = [
+            inc for inc in open_incs
+            if inc.get("affected_ip") and inc["affected_ip"] in fresh_online_ips
+        ]
+        if to_resolve:
+            await _resolve_incidents_batch(db, [inc["id"] for inc in to_resolve])
+            for inc in to_resolve:
                 await _send_telegram(f"✅ Resolved: {inc['title']}")
-                logger.info("Device came back online: %s", ip)
+                logger.info("Device came back online: %s", inc["affected_ip"])
 
 
 async def _check_internal_latency(db: AsyncSession) -> None:
@@ -651,9 +681,13 @@ async def _check_traffic_anomaly(db: AsyncSession) -> None:
         FROM network_incidents
         WHERE category = 'traffic_anomaly' AND resolved_at IS NULL
     """)
-    for inc in open_incs:
-        if inc.get("affected_ip") not in anomalous_ips:
-            await _resolve_incident(db, inc["id"])
+    to_resolve = [
+        inc for inc in open_incs
+        if inc.get("affected_ip") not in anomalous_ips
+    ]
+    if to_resolve:
+        await _resolve_incidents_batch(db, [inc["id"] for inc in to_resolve])
+        for inc in to_resolve:
             await _send_telegram(f"✅ Resolved: {inc['title']}")
             logger.info("Traffic anomaly resolved for %s", inc.get("affected_ip"))
 
