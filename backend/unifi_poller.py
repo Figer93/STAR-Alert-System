@@ -51,6 +51,11 @@ _OFFLINE_STATES: frozenset[int] = frozenset({0, 6})  # 0=disconnected, 6=heartbe
 _TRANSIENT_STATES: frozenset[int] = frozenset({4, 5})  # 4=upgrading, 5=provisioning
 
 
+class LoginFailedError(Exception):
+    """Raised by fetch() when the UniFi controller login is unavailable.
+    _run_poll_cycle catches this to skip the DB commit entirely."""
+
+
 class UniFiSourcePoller:
     """
     Manages authentication and in-memory poll state for one UniFi source.
@@ -78,6 +83,16 @@ class UniFiSourcePoller:
 
         self._last_poll_ts: float = 0.0
         self._consecutive_failures: int = 0
+
+        # Login-specific backoff — independent of poll-cycle failures.
+        # _login_failures counts consecutive auth errors (HTTP or network).
+        # _login_backoff_until is a monotonic timestamp; login is skipped until
+        # this time passes.  Both reset to 0 on a successful authentication.
+        self._login_failures: int = 0
+        self._login_backoff_until: float = 0.0
+        # Set to True inside _login() on any failure; read by fetch() to decide
+        # whether to raise LoginFailedError and skip the DB commit.
+        self._auth_failed_this_cycle: bool = False
 
     # ── Config helpers ────────────────────────────────────────────────────────
 
@@ -126,6 +141,11 @@ class UniFiSourcePoller:
         return self._session
 
     async def _login(self) -> bool:
+        # Backoff gate — don't even send a request until the window clears.
+        if time.monotonic() < self._login_backoff_until:
+            self._auth_failed_this_cycle = True
+            return False
+
         session = await self._get_session()
 
         login_url = (
@@ -147,22 +167,35 @@ class UniFiSourcePoller:
             ) as resp:
                 if resp.status in (200, 201):
                     self._authenticated = True
+                    self._login_failures = 0
+                    self._login_backoff_until = 0.0
                     logger.info("UniFi [%s]: authenticated to %s", self.slug, self._controller_url)
                     return True
                 body = await resp.text()
+                self._login_failures += 1
+                self._auth_failed_this_cycle = True
+                delay = min(30 * (2 ** (self._login_failures - 1)), 300)
+                self._login_backoff_until = time.monotonic() + delay
                 logger.warning(
-                    "UniFi [%s]: login failed (HTTP %d): %s",
-                    self.slug, resp.status, body[:300],
+                    "UniFi [%s]: login failed (HTTP %d) — backoff %.0fs (failure #%d): %s",
+                    self.slug, resp.status, delay, self._login_failures, body[:200],
                 )
                 return False
         except Exception as exc:
-            self._consecutive_failures += 1
-            if self._consecutive_failures <= 3:
-                logger.warning("UniFi [%s]: login error — %s", self.slug, exc)
-            elif self._consecutive_failures == 4:
-                logger.warning("UniFi [%s]: repeated login failures, backing off (further errors suppressed)", self.slug)
+            self._login_failures += 1
+            self._auth_failed_this_cycle = True
+            delay = min(30 * (2 ** (self._login_failures - 1)), 300)
+            self._login_backoff_until = time.monotonic() + delay
+            if self._login_failures <= 2:
+                logger.warning(
+                    "UniFi [%s]: login error — backoff %.0fs — %s",
+                    self.slug, delay, exc,
+                )
             else:
-                logger.debug("UniFi [%s]: login error (failure #%d) — %s", self.slug, self._consecutive_failures, exc)
+                logger.debug(
+                    "UniFi [%s]: login error (failure #%d, backoff %.0fs) — %s",
+                    self.slug, self._login_failures, delay, exc,
+                )
             return False
 
     async def _get(self, path: str) -> Optional[list[dict]]:
@@ -209,7 +242,12 @@ class UniFiSourcePoller:
         """
         Phase 1 — HTTP only.  Calls the UniFi controller and returns raw alerts.
         No DB session is held during this phase; network I/O can take up to 60 s.
+
+        Raises LoginFailedError if authentication is unavailable (including when
+        still within the exponential-backoff window).  _run_poll_cycle catches
+        this to skip the DB commit entirely for the cycle.
         """
+        self._auth_failed_this_cycle = False
         raw_alerts: list[RawAlert] = []
 
         if self.config.get("monitor_devices", True):
@@ -220,6 +258,9 @@ class UniFiSourcePoller:
 
         if self.config.get("monitor_alarms", True):
             raw_alerts.extend(await self._poll_alarms())
+
+        if self._auth_failed_this_cycle:
+            raise LoginFailedError(self.slug)
 
         return raw_alerts
 
@@ -445,6 +486,12 @@ async def _run_poll_cycle(slug: str, poller: UniFiSourcePoller) -> None:
     The DB session is intentionally NOT open during the HTTP fetch phase so
     that slow or unresponsive UniFi controllers cannot exhaust the connection
     pool — connections are only checked out for the fast DB-write phase.
+
+    LoginFailedError is handled separately from other exceptions:
+      • _last_poll_ts is updated so the loop doesn't hammer a failing controller
+        every 10 s while the backoff window runs.
+      • No DB session is opened — nothing to commit.
+      • _consecutive_failures is not incremented (the login backoff handles pacing).
     """
     try:
         # Phase 1: HTTP requests to UniFi controller (no DB connection held)
@@ -456,6 +503,13 @@ async def _run_poll_cycle(slug: str, poller: UniFiSourcePoller) -> None:
             await poller.commit(raw_alerts, db)
 
         poller._consecutive_failures = 0
+
+    except LoginFailedError:
+        # Auth is unavailable — backoff is already tracked inside _login().
+        # Update _last_poll_ts so we don't re-trigger on every 10s loop tick.
+        poller._last_poll_ts = time.monotonic()
+        logger.debug("UniFi [%s]: poll cycle skipped — login unavailable (backoff active)", slug)
+
     except Exception:
         poller._consecutive_failures += 1
         logger.exception("UniFi [%s]: poll cycle error", slug)
@@ -465,58 +519,70 @@ async def unifi_polling_loop() -> None:
     """
     Long-running background task.
 
-    Every 10 s it reconciles the active poller registry against the database:
-      • Starts pollers for newly enabled UniFi sources.
-      • Removes pollers for disabled / deleted sources.
-      • Fires off due poll cycles as independent tasks.
+    Wakes every 10 s to fire off due poll cycles.  Source configs are refreshed
+    from the DB at most once every 60 s (reconciliation interval) so that a DB
+    session is not checked out on every tick — the previous bug was opening a
+    connection every 10 s regardless of whether login was failing.
     """
     logger.info("UniFi polling loop started")
 
+    _RECONCILE_INTERVAL = 60  # seconds between DB config reads
+    _last_reconcile_ts: float = 0.0
+    # Cached config from the last DB read; kept between reconciliations.
+    _slug_to_config: dict[str, dict] = {}
+
     while True:
-        try:
-            from sqlalchemy import select
-            from backend.database import AsyncSessionLocal
-            from backend.models import Source
+        now = time.monotonic()
 
-            async with AsyncSessionLocal() as db:
-                result = await db.execute(
-                    select(Source)
-                    .where(Source.adapter == "unifi")
-                    .where(Source.enabled == True)  # noqa: E712
-                )
-                sources = result.scalars().all()
+        # ── Reconciliation (DB) — at most once per 60 s ───────────────────────
+        if now - _last_reconcile_ts >= _RECONCILE_INTERVAL:
+            try:
+                from sqlalchemy import select
+                from backend.database import AsyncSessionLocal
+                from backend.models import Source
 
-            # Build active slug set and refresh configs
-            active_slugs: set[str] = set()
-            slug_to_config: dict[str, dict] = {}
-            for src in sources:
-                active_slugs.add(src.slug)
-                slug_to_config[src.slug] = dict(src.config or {})
+                async with AsyncSessionLocal() as db:
+                    result = await db.execute(
+                        select(Source)
+                        .where(Source.adapter == "unifi")
+                        .where(Source.enabled == True)  # noqa: E712
+                    )
+                    sources = result.scalars().all()
+                    # Extract plain values before session closes
+                    fetched: list[tuple[str, dict]] = [
+                        (src.slug, dict(src.config or {})) for src in sources
+                    ]
+                # Session released here
 
-            # Start pollers for new sources
-            for slug, cfg in slug_to_config.items():
-                if slug not in _pollers:
-                    logger.info("UniFi: registering poller for source '%s'", slug)
-                    _pollers[slug] = UniFiSourcePoller(slug, cfg)
+                active_slugs: set[str] = {slug for slug, _ in fetched}
+                _slug_to_config = {slug: cfg for slug, cfg in fetched}
 
-            # Remove pollers for deleted / disabled sources
-            for slug in list(_pollers.keys()):
-                if slug not in active_slugs:
-                    logger.info("UniFi: removing poller for source '%s'", slug)
-                    await _pollers[slug].close()
-                    del _pollers[slug]
+                # Start pollers for new sources
+                for slug, cfg in _slug_to_config.items():
+                    if slug not in _pollers:
+                        logger.info("UniFi: registering poller for source '%s'", slug)
+                        _pollers[slug] = UniFiSourcePoller(slug, cfg)
 
-            # Trigger due poll cycles (non-blocking)
-            now = time.monotonic()
-            for slug, poller in list(_pollers.items()):
-                # Refresh config so live changes (e.g. new password) take effect
-                poller.config = slug_to_config.get(slug, poller.config)
-                interval = poller._poll_interval
+                # Remove pollers for deleted / disabled sources
+                for slug in list(_pollers.keys()):
+                    if slug not in active_slugs:
+                        logger.info("UniFi: removing poller for source '%s'", slug)
+                        await _pollers[slug].close()
+                        del _pollers[slug]
 
-                if now - poller._last_poll_ts >= interval:
-                    asyncio.create_task(_run_poll_cycle(slug, poller))
+                _last_reconcile_ts = time.monotonic()
 
-        except Exception:
-            logger.exception("UniFi polling loop reconciliation error")
+            except Exception:
+                logger.exception("UniFi polling loop reconciliation error")
+
+        # ── Poll trigger — every 10 s tick ────────────────────────────────────
+        now = time.monotonic()
+        for slug, poller in list(_pollers.items()):
+            # Push any live config changes (e.g. updated password) to the poller
+            if slug in _slug_to_config:
+                poller.config = _slug_to_config[slug]
+            interval = poller._poll_interval
+            if now - poller._last_poll_ts >= interval:
+                asyncio.create_task(_run_poll_cycle(slug, poller))
 
         await asyncio.sleep(10)
