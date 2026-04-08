@@ -52,11 +52,13 @@ def upgrade() -> None:
         "ix_network_incidents_resolved_at",
         "network_incidents",
         ["resolved_at"],
+        if_not_exists=True,
     )
     op.create_index(
         "ix_network_incidents_started_at",
         "network_incidents",
         [sa.text("started_at DESC")],
+        if_not_exists=True,
     )
 
     # ------------------------------------------------------------------
@@ -66,6 +68,7 @@ def upgrade() -> None:
         "ix_latency_metrics_target_type_time",
         "latency_metrics",
         ["target_type", sa.text("time DESC")],
+        if_not_exists=True,
     )
 
     # ------------------------------------------------------------------
@@ -76,6 +79,7 @@ def upgrade() -> None:
         "ix_switch_port_metrics_time",
         "switch_port_metrics",
         [sa.text("time DESC")],
+        if_not_exists=True,
     )
 
     # ------------------------------------------------------------------
@@ -85,34 +89,37 @@ def upgrade() -> None:
         "ix_device_registry_is_online",
         "device_registry",
         ["is_online"],
+        if_not_exists=True,
     )
 
     # ------------------------------------------------------------------
     # alerts — FK and filter columns had no indexes in the initial migration
     # ------------------------------------------------------------------
-    op.create_index("ix_alerts_source_id",   "alerts", ["source_id"])
-    op.create_index("ix_alerts_status",      "alerts", ["status"])
-    op.create_index("ix_alerts_severity",    "alerts", ["severity"])
+    op.create_index("ix_alerts_source_id",   "alerts", ["source_id"],   if_not_exists=True)
+    op.create_index("ix_alerts_status",      "alerts", ["status"],      if_not_exists=True)
+    op.create_index("ix_alerts_severity",    "alerts", ["severity"],    if_not_exists=True)
     op.create_index(
         "ix_alerts_first_seen",
         "alerts",
         [sa.text("first_seen DESC")],
+        if_not_exists=True,
     )
     op.create_index(
         "ix_alerts_last_seen",
         "alerts",
         [sa.text("last_seen DESC")],
+        if_not_exists=True,
     )
 
 
 def downgrade() -> None:
-    op.drop_index("ix_alerts_last_seen",                    table_name="alerts")
-    op.drop_index("ix_alerts_first_seen",                   table_name="alerts")
-    op.drop_index("ix_alerts_severity",                     table_name="alerts")
-    op.drop_index("ix_alerts_status",                       table_name="alerts")
-    op.drop_index("ix_alerts_source_id",                    table_name="alerts")
-    op.drop_index("ix_device_registry_is_online",           table_name="device_registry")
-    op.drop_index("ix_switch_port_metrics_time",            table_name="switch_port_metrics")
-    op.drop_index("ix_latency_metrics_target_type_time",    table_name="latency_metrics")
-    op.drop_index("ix_network_incidents_started_at",        table_name="network_incidents")
-    op.drop_index("ix_network_incidents_resolved_at",       table_name="network_incidents")
+    op.drop_index("ix_alerts_last_seen",                    table_name="alerts",             if_exists=True)
+    op.drop_index("ix_alerts_first_seen",                   table_name="alerts",             if_exists=True)
+    op.drop_index("ix_alerts_severity",                     table_name="alerts",             if_exists=True)
+    op.drop_index("ix_alerts_status",                       table_name="alerts",             if_exists=True)
+    op.drop_index("ix_alerts_source_id",                    table_name="alerts",             if_exists=True)
+    op.drop_index("ix_device_registry_is_online",           table_name="device_registry",    if_exists=True)
+    op.drop_index("ix_switch_port_metrics_time",            table_name="switch_port_metrics", if_exists=True)
+    op.drop_index("ix_latency_metrics_target_type_time",    table_name="latency_metrics",    if_exists=True)
+    op.drop_index("ix_network_incidents_started_at",        table_name="network_incidents",  if_exists=True)
+    op.drop_index("ix_network_incidents_resolved_at",       table_name="network_incidents",  if_exists=True)
