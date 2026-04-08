@@ -624,13 +624,13 @@ export default function NetworkOverview() {
                 <CartesianGrid stroke="rgba(255,255,255,0.04)" vertical={false} />
                 <XAxis
                   dataKey="label"
-                  tick={{ fontSize: 9, fill: '#3d4260' }}
+                  tick={{ fontSize: 9, fill: 'var(--text-dim)', fontFamily: 'JetBrains Mono, monospace' }}
                   tickLine={false}
                   axisLine={{ stroke: 'rgba(255,255,255,0.06)' }}
                   interval="preserveStartEnd"
                 />
                 <YAxis
-                  tick={{ fontSize: 9, fill: '#3d4260' }}
+                  tick={{ fontSize: 9, fill: 'var(--text-dim)', fontFamily: 'JetBrains Mono, monospace' }}
                   tickLine={false}
                   axisLine={false}
                   tickFormatter={v => `${v}ms`}
@@ -644,14 +644,14 @@ export default function NetworkOverview() {
                 {targets.slice(0, 5).map((t, i) => (
                   <Line
                     key={t}
-                    type="monotone"
+                    type="linear"
                     dataKey={`${sanitise(t)}_rtt`}
                     name={t}
                     stroke={TARGET_COLOURS[i]}
-                    strokeWidth={1.5}
+                    strokeWidth={1}
                     dot={false}
                     connectNulls={false}
-                    activeDot={{ r: 3, fill: TARGET_COLOURS[i] }}
+                    isAnimationActive={false}
                   />
                 ))}
               </LineChart>

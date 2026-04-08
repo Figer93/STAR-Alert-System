@@ -123,7 +123,21 @@ function App() {
     socket.onmessage = (e) => {
       try {
         const msg: WSMessage = JSON.parse(e.data)
-        if (msg.event === 'ping') socket.send('pong')
+        if (msg.event === 'ping') {
+          socket.send('pong')
+        } else if (msg.event === 'alert.new') {
+          const a = msg.payload as { severity?: string; title?: string; source?: { name?: string } }
+          const sev = a.severity ?? 'info'
+          const title = a.title ?? 'New alert'
+          const src = a.source?.name ? ` · ${a.source.name}` : ''
+          if (sev === 'critical') {
+            toast.error(`${title}${src}`, { duration: 6000 })
+          } else if (sev === 'warning') {
+            toast.warning(`${title}${src}`, { duration: 4000 })
+          } else {
+            toast.message(`${title}${src}`, { duration: 3000 })
+          }
+        }
       } catch { /* ignore */ }
     }
 
