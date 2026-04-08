@@ -176,12 +176,12 @@ function SwitchDiagram({
       background:   '#0f0f12',
       border:       '1px solid rgba(255,255,255,0.06)',
       borderRadius: 8,
-      padding:      24,
+      padding:      '20px 24px',
     }}>
       {/* Chassis rows */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {rows.map((row, ri) => (
-          <div key={ri} style={{ display: 'flex', gap: 3, alignItems: 'center' }}>
+          <div key={ri} style={{ display: 'flex', flexWrap: 'nowrap', gap: 3, alignItems: 'center' }}>
             {row.map(slot => {
               const p      = slotMap.get(slot)
               const status = p?.status ?? 'empty'
@@ -213,8 +213,8 @@ function SwitchDiagram({
                   onMouseMove={e  => p && tip && setTip({ port: p, x: e.clientX, y: e.clientY })}
                   onMouseLeave={() => setTip(null)}
                   style={{
-                    width:        14,
-                    height:       44,
+                    width:        20,
+                    height:       52,
                     borderRadius: 3,
                     background:   status === 'empty' ? '#1c1c1f' : active ? color : `${color}33`,
                     border:       `1px solid ${active ? color : `${color}55`}`,
@@ -641,7 +641,7 @@ export default function NetworkPorts() {
   const sorted = [...filtered].sort((a, b) => {
     let av: number | string = 0
     let bv: number | string = 0
-    if (sortCol === 'port')       { av = portNum(a);                      bv = portNum(b) }
+    if (sortCol === 'port')       { av = parseInt(a.port_id, 10) || portNum(a); bv = parseInt(b.port_id, 10) || portNum(b) }
     if (sortCol === 'device')     { av = a.device_name ?? '';             bv = b.device_name ?? '' }
     if (sortCol === 'ip')         { av = a.device_ip ?? '';               bv = b.device_ip ?? '' }
     if (sortCol === 'rx')         { av = a.rx_bytes_rate;                 bv = b.rx_bytes_rate }
