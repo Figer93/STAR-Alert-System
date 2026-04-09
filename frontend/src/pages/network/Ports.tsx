@@ -181,7 +181,7 @@ function SwitchDiagram({
       {/* Chassis rows */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {rows.map((row, ri) => (
-          <div key={ri} style={{ display: 'flex', flexWrap: 'nowrap', gap: 3, alignItems: 'center' }}>
+          <div key={ri} style={{ display: 'flex', flexWrap: 'nowrap', gap: 2, alignItems: 'center' }}>
             {row.map(slot => {
               const p      = slotMap.get(slot)
               const status = p?.status ?? 'empty'
@@ -213,9 +213,9 @@ function SwitchDiagram({
                   onMouseMove={e  => p && tip && setTip({ port: p, x: e.clientX, y: e.clientY })}
                   onMouseLeave={() => setTip(null)}
                   style={{
-                    width:        20,
-                    height:       52,
-                    borderRadius: 3,
+                    width:        9,
+                    height:       26,
+                    borderRadius: 2,
                     background:   status === 'empty' ? '#1c1c1f' : active ? color : `${color}33`,
                     border:       `1px solid ${active ? color : `${color}55`}`,
                     outline:      active ? '1px solid #60a5fa' : 'none',
@@ -236,17 +236,17 @@ function SwitchDiagram({
                 >
                   {/* LED dot */}
                   <div style={{
-                    width:        6,
-                    height:       6,
+                    width:        3,
+                    height:       3,
                     borderRadius: '50%',
-                    marginTop:    4,
+                    marginTop:    2,
                     background:   ledBg,
                     boxShadow:    ledShadow,
                     flexShrink:   0,
                   }} />
                   {/* Port number */}
                   <span style={{
-                    fontSize:   8,
+                    fontSize:   6,
                     fontFamily: 'monospace',
                     color:      'rgba(255,255,255,0.3)',
                     lineHeight: 1,

@@ -7,6 +7,7 @@ import {
   RefreshCw, Download,
 } from 'lucide-react'
 import { Drawer } from 'vaul'
+import { TextScramble } from '../../components/TextScramble'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -1001,14 +1002,14 @@ export default function Devices() {
                             padding: 0, display: 'flex', alignItems: 'center', gap: 5,
                           }}
                         >
-                          {displayName(d.hostname, d.mac)}
+                          <TextScramble text={displayName(d.hostname, d.mac)} />
                           <ExternalLink size={11} style={{ opacity: 0.6 }} />
                         </button>
                       </td>
 
                       {/* IP */}
                       <td style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)', fontFamily: 'monospace', fontSize: 13, color: 'var(--text-muted)' }}>
-                        {d.ip}
+                        <TextScramble text={d.ip} />
                       </td>
 
                       {/* MAC */}
