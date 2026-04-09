@@ -1,5 +1,6 @@
-# v1.1.4 — Network Monitor
+# v1.1.5 — Network Monitor (latency overhaul + logging fix)
 import asyncio
+import json
 import logging
 import logging.handlers
 from contextlib import asynccontextmanager
@@ -20,18 +21,61 @@ from backend.websocket_manager import ws_manager
 log_dir = Path("logs")
 log_dir.mkdir(exist_ok=True)
 
+
+class _RailwayJsonFormatter(logging.Formatter):
+    """
+    Emit each log record as a single-line JSON object with an explicit
+    'severity' field that Railway / GCP Cloud Logging reads directly.
+
+    Without this, GCP's plain-text auto-detection misclassifies any INFO
+    message whose text contains the word 'error' (e.g. 'Interface error
+    resolved', 'Retention cleanup error') as ERROR severity.  Setting the
+    severity field explicitly from the Python log level prevents that mapping.
+    """
+
+    _LEVEL_MAP: dict[int, str] = {
+        logging.DEBUG:    "DEBUG",
+        logging.INFO:     "INFO",
+        logging.WARNING:  "WARNING",
+        logging.ERROR:    "ERROR",
+        logging.CRITICAL: "CRITICAL",
+    }
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload: dict = {
+            "severity": self._LEVEL_MAP.get(record.levelno, "DEFAULT"),
+            "message":  record.getMessage(),
+            "logger":   record.name,
+        }
+        if record.exc_info:
+            payload["exc_info"] = self.formatException(record.exc_info)
+        return json.dumps(payload, ensure_ascii=False)
+
+
+_plain_fmt = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+_log_level  = logging.DEBUG if settings.DEBUG else logging.INFO
+
+# StreamHandler — JSON for Railway/GCP; plain text in debug (local dev)
+_stream_handler = logging.StreamHandler()
+if settings.DEBUG:
+    _stream_handler.setFormatter(logging.Formatter(_plain_fmt))
+else:
+    _stream_handler.setFormatter(_RailwayJsonFormatter())
+
 logging.basicConfig(
-    level=logging.DEBUG if settings.DEBUG else logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    level=_log_level,
     handlers=[
-        logging.StreamHandler(),
+        _stream_handler,
         logging.handlers.RotatingFileHandler(
             log_dir / "app.log",
             maxBytes=10 * 1024 * 1024,  # 10 MB
             backupCount=5,
+            encoding="utf-8",
         ),
     ],
 )
+# File handler always uses plain text for human-readable log files
+logging.root.handlers[1].setFormatter(logging.Formatter(_plain_fmt))
 
 logger = logging.getLogger(__name__)
 

@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     # Leave blank to omit links from notifications.
     STAR_URL: str = ""
 
+    # ISP gateway IP (first WAN hop) — read from pfSense Status → Interfaces → WAN.
+    # Leave blank to omit the WAN gateway from latency polling.
+    WAN_GATEWAY_IP: str = ""
+
     # UniFi Cloud API (api.ui.com)
     # Leave UNIFI_CLOUD_API_KEY blank to disable cloud polling.
     UNIFI_CLOUD_API_KEY: str = ""

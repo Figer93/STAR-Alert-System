@@ -50,8 +50,41 @@ _PORT_MIN_BYTES       = 1_048_576     # 1 MB min traffic for rate-based threshol
 _TRAFFIC_ANOMALY_MULTIPLIER = 5.0     # × historical average
 _TRAFFIC_HISTORY_MIN_AVG_BYTES = 102_400  # 100 KB — ignore very-low-traffic devices
 
+# ── Latency polling targets ───────────────────────────────────────────────────
+# Static IP → role label.  WAN_GATEWAY_IP from settings is merged in at runtime.
+
+_LATENCY_TARGET_ROLES: dict[str, str] = {
+    "10.2.1.253":  "pfSense (LAN gateway)",
+    "10.2.1.5":    "Primary DC (VLAN 1)",
+    "10.2.1.3":    "Secondary DC (VLAN 1)",
+    "10.2.2.100":  "DC (VLAN 2)",
+    "1.1.1.1":     "Cloudflare DNS",
+    "8.8.8.8":     "Google DNS",
+}
+_INTERNAL_IPS = frozenset({"10.2.1.253", "10.2.1.5", "10.2.1.3", "10.2.2.100"})
+_EXTERNAL_DNS  = frozenset({"1.1.1.1", "8.8.8.8"})
+
+_LATENCY_CONSECUTIVE_THRESHOLD = 3    # alert after N consecutive readings above threshold
+_LATENCY_COOLDOWN_MINUTES       = 10  # suppress re-alert for N min after a target recovers
+
+_ROOT_CAUSE_LABELS: dict[str, str] = {
+    "WAN_ISP":       "WAN / ISP Outage",
+    "WAN_LINE":      "WAN Line Fault (physical CPE-to-pfSense)",
+    "PFSENSE":       "pfSense Overload / LAN Interface",
+    "DC_PRIMARY":    "Primary DC Overload / NIC Issue",
+    "DC_SECONDARY":  "Secondary DC Overload / NIC Issue",
+    "VLAN2_DC":      "VLAN 2 Routing or DC Issue",
+    "ALL_INTERNAL":  "Core Switch Failure / Broadcast Storm",
+    "FULL_OUTAGE":   "Full Network Outage (pfSense down)",
+    "UNKNOWN":       "Mixed / Unknown Root Cause",
+}
+
 # Module-level state for collector liveness (no DB row involved)
 _collector_online_state: Optional[bool] = None
+
+# Per-target latency tracking (consecutive count + post-resolve cooldown)
+_latency_consecutive: dict[str, int]      = {}  # ip → consecutive readings above threshold
+_latency_cooldown:    dict[str, datetime] = {}  # ip → cooldown-expiry timestamp
 
 # ── Telegram rate limiting ────────────────────────────────────────────────────
 # Per-device cooldown: at most 1 new-incident alert per (category, entity) per hour.
@@ -262,6 +295,7 @@ async def _create_incident(
     affected_switch: Optional[str] = None,
     affected_port: Optional[str] = None,
     evidence: Optional[dict] = None,
+    root_cause: Optional[str] = None,
 ) -> Optional[str]:
     """
     Insert a new network_incident row and commit.
@@ -280,6 +314,7 @@ async def _create_incident(
         "description":     description,
         "affected_switch": affected_switch,
         "affected_port":   affected_port,
+        "root_cause":      root_cause,
     }
     if affected_ip:
         params["affected_ip"] = affected_ip
@@ -290,11 +325,11 @@ async def _create_incident(
         INSERT INTO network_incidents (
             severity, category, title, description,
             affected_ip, affected_switch, affected_port,
-            evidence, auto_detected
+            evidence, root_cause, auto_detected
         ) VALUES (
             :severity, :category, :title, :description,
             {ip_sql}, :affected_switch, :affected_port,
-            {ev_sql}, true
+            {ev_sql}, :root_cause, true
         )
         RETURNING id::text AS id
     """, params)
@@ -596,48 +631,166 @@ async def _check_devices_offline(db: AsyncSession) -> None:
                 logger.info("Device came back online: %s", inc["affected_ip"])
 
 
-async def _check_internal_latency(db: AsyncSession) -> None:
-    """Check 4: Average gateway RTT > 50 ms in the last 3 minutes."""
-    row = await _exec_one(db, """
-        SELECT AVG(rtt_ms) AS avg_rtt
-        FROM latency_metrics
-        WHERE target_type = 'gateway'
-          AND time > NOW() - INTERVAL '3 minutes'
-    """)
-    if not row or row["avg_rtt"] is None:
-        return
+def _classify_root_cause(affected: set[str]) -> str:
+    """Map the set of latency-spiking IPs to a root-cause label."""
+    wan_gw        = settings.WAN_GATEWAY_IP.strip()
+    internals_hit = _INTERNAL_IPS & affected
+    dns_hit       = _EXTERNAL_DNS & affected
+    wan_hit       = bool(wan_gw and wan_gw in affected)
+    all_wan       = _EXTERNAL_DNS | ({wan_gw} if wan_gw else set())
 
-    avg_rtt  = float(row["avg_rtt"])
+    # FULL_OUTAGE — all known targets spike simultaneously
+    if (_INTERNAL_IPS <= affected) and (not all_wan or all_wan <= affected):
+        return "FULL_OUTAGE"
+
+    # WAN_ISP — 1.1.1.1 + 8.8.8.8 + WAN gateway all spike, internals OK
+    if dns_hit == _EXTERNAL_DNS and wan_hit and not internals_hit:
+        return "WAN_ISP"
+
+    # WAN_LINE — WAN gateway spikes but 1.1.1.1 + 8.8.8.8 OK, internals OK
+    if wan_hit and not dns_hit and not internals_hit:
+        return "WAN_LINE"
+
+    # ALL_INTERNAL — all four internal IPs spike, no external
+    if _INTERNAL_IPS <= affected and not dns_hit and not wan_hit:
+        return "ALL_INTERNAL"
+
+    # PFSENSE — only 10.2.1.253 spikes
+    if affected == {"10.2.1.253"}:
+        return "PFSENSE"
+
+    # DC_PRIMARY — 10.2.1.5 spikes; pfSense + secondary DC not affected
+    if (
+        "10.2.1.5" in affected
+        and "10.2.1.253" not in affected
+        and "10.2.1.3" not in affected
+        and not dns_hit and not wan_hit
+    ):
+        return "DC_PRIMARY"
+
+    # DC_SECONDARY — 10.2.1.3 alone
+    if affected == {"10.2.1.3"}:
+        return "DC_SECONDARY"
+
+    # VLAN2_DC — 10.2.2.100 spikes; VLAN 1 targets OK
+    if (
+        "10.2.2.100" in affected
+        and not ({"10.2.1.253", "10.2.1.5", "10.2.1.3"} & affected)
+        and not dns_hit and not wan_hit
+    ):
+        return "VLAN2_DC"
+
+    return "UNKNOWN"
+
+
+async def _check_internal_latency(db: AsyncSession) -> None:
+    """
+    Check 4: Per-target latency spike detection with consecutive-count guard.
+
+    Polls all seven ST&R targets (plus optional WAN_GATEWAY_IP).
+    An alert fires only after _LATENCY_CONSECUTIVE_THRESHOLD (3) consecutive
+    60-second readings above _LATENCY_THRESHOLD_MS (50 ms) for a given target.
+    After a target recovers, a _LATENCY_COOLDOWN_MINUTES (10 min) cooldown
+    prevents re-alerting immediately on the next transient spike.
+    Root cause is classified from the set of currently alerting IPs.
+    """
+    now = datetime.now(timezone.utc)
+
+    # Merge static targets with optional WAN gateway
+    targets: dict[str, str] = dict(_LATENCY_TARGET_ROLES)
+    wan_gw = settings.WAN_GATEWAY_IP.strip()
+    if wan_gw:
+        targets[wan_gw] = "WAN Gateway (ISP)"
+
+    # Query avg RTT per target IP over the last 3 minutes
+    rows = await _exec(db, """
+        SELECT target_ip::text AS ip, AVG(rtt_ms) AS avg_rtt
+        FROM latency_metrics
+        WHERE time > NOW() - INTERVAL '3 minutes'
+          AND rtt_ms IS NOT NULL
+        GROUP BY target_ip
+    """)
+    rtt_by_ip: dict[str, float] = {
+        r["ip"]: float(r["avg_rtt"])
+        for r in rows
+        if r["ip"] is not None and r["avg_rtt"] is not None
+    }
+
+    # Update per-target consecutive counts; collect currently alerting IPs
+    alerting: dict[str, float] = {}   # ip → avg_rtt (met threshold for N consecutive reads)
+    for ip in targets:
+        rtt = rtt_by_ip.get(ip)
+        if rtt is not None and rtt > _LATENCY_THRESHOLD_MS:
+            _latency_consecutive[ip] = _latency_consecutive.get(ip, 0) + 1
+            if _latency_consecutive[ip] >= _LATENCY_CONSECUTIVE_THRESHOLD:
+                cooldown_until = _latency_cooldown.get(ip)
+                if cooldown_until is None or now >= cooldown_until:
+                    alerting[ip] = rtt
+        else:
+            prev_count = _latency_consecutive.get(ip, 0)
+            _latency_consecutive[ip] = 0
+            if prev_count >= _LATENCY_CONSECUTIVE_THRESHOLD:
+                # Was alerting — start post-resolve cooldown
+                _latency_cooldown[ip] = now + timedelta(minutes=_LATENCY_COOLDOWN_MINUTES)
+
     open_inc = await _get_open_incident(db, "internal_latency")
 
-    if avg_rtt > _LATENCY_THRESHOLD_MS:
+    if alerting:
         if open_inc:
-            return
+            return  # Incident already open; wait for full resolution
+
         if await _recently_resolved(db, "internal_latency"):
             return
+
+        root_cause = _classify_root_cause(set(alerting))
+        rc_label   = _ROOT_CAUSE_LABELS.get(root_cause, root_cause)
+        max_consec = max(_latency_consecutive.get(ip, 0) for ip in alerting)
 
         await _create_incident(
             db,
             severity="high",
             category="internal_latency",
-            title=f"Internal latency spike: {avg_rtt:.1f} ms to gateway",
+            title=f"Latency spike [{root_cause}]: {', '.join(sorted(alerting))}",
             description=(
-                f"Average RTT to gateway over the last 3 minutes: {avg_rtt:.1f} ms. "
-                f"Possible core switch congestion or cabling fault."
+                f"Root cause: {rc_label}. "
+                f"Targets: {', '.join(f'{ip} ({targets[ip]})' for ip in sorted(alerting))}. "
+                f"Peak RTT: {max(alerting.values()):.1f} ms. "
+                f"Consecutive readings: {max_consec}."
             ),
-            evidence={"avg_rtt_ms": round(avg_rtt, 2)},
+            evidence={
+                "root_cause":   root_cause,
+                "targets":      {ip: round(rtt, 2) for ip, rtt in alerting.items()},
+                "threshold_ms": _LATENCY_THRESHOLD_MS,
+                "consecutive":  max_consec,
+            },
+            root_cause=root_cause,
         )
+
+        tg_lines = [f"🔴 ALERT — {rc_label}", "Targets affected:"]
+        for ip, rtt in sorted(alerting.items()):
+            tg_lines.append(
+                f"  Latency: {ip} ({targets[ip]}) = {rtt:.1f} ms"
+                f"  [threshold: {_LATENCY_THRESHOLD_MS:.0f} ms]"
+            )
+        tg_lines.append(f"Consecutive readings: {max_consec}")
+        tg_lines.append(f"Time: {now.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+
         link = _investigate_link()
-        msg = f"🔴 Internal latency: {avg_rtt:.1f}ms to gateway. Check core switch load."
+        msg  = "\n".join(tg_lines)
         if link:
             msg += f"\n{link}"
+
         await _rate_limited_telegram(msg, dedup_key="internal_latency")
-        logger.warning("Internal latency incident opened: %.1f ms", avg_rtt)
+        logger.warning(
+            "Latency spike incident opened [%s]: %s",
+            root_cause,
+            ", ".join(f"{ip}={rtt:.1f}ms" for ip, rtt in sorted(alerting.items())),
+        )
 
     elif open_inc:
         await _resolve_incident(db, open_inc["id"])
         await _send_telegram(f"✅ Resolved: {open_inc['title']}")
-        logger.info("Internal latency resolved")
+        logger.info("Internal latency spike resolved")
 
 
 async def _check_collector_offline(db: AsyncSession) -> None:
