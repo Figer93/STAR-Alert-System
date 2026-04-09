@@ -92,7 +92,11 @@ services:
       SUPABASE_URL: ${SUPABASE_URL}
       SUPABASE_KEY: ${SUPABASE_KEY}
       GATEWAY_IP: ${GATEWAY_IP}
+      WAN1_GATEWAY_IP: ${WAN1_GATEWAY_IP:-}
+      WAN2_GATEWAY_IP: ${WAN2_GATEWAY_IP:-}
       ISP_GATEWAY_IP: ${ISP_GATEWAY_IP:-}
+      INTERNAL_IPS: ${INTERNAL_IPS:-}
+      WAN_MONITOR_IPS: ${WAN_MONITOR_IPS:-8.8.8.8,1.1.1.1}
       FPING_INTERVAL: "30"
     networks:
       - collector_net

@@ -82,7 +82,7 @@ function Sidebar() {
         marginBottom: 8,
         flexShrink: 0,
       }}>
-        <span style={{ color: '#fff', fontWeight: 700, fontSize: 13, fontFamily: 'JetBrains Mono, monospace' }}>S</span>
+        <span style={{ color: 'var(--text-bright)', fontWeight: 700, fontSize: 13, fontFamily: 'JetBrains Mono, monospace' }}>S</span>
       </div>
 
       {TOP_NAV.map(item => (

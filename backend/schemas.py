@@ -14,10 +14,6 @@ class SourceBase(BaseModel):
     config: dict = {}
 
 
-class SourceCreate(SourceBase):
-    pass
-
-
 class SourceRead(SourceBase):
     model_config = ConfigDict(from_attributes=True)
 
@@ -78,10 +74,6 @@ class RuleBase(BaseModel):
     notify_email: bool = False
     cooldown_minutes: int = 15
     enabled: bool = True
-
-
-class RuleCreate(RuleBase):
-    pass
 
 
 class RuleUpdate(BaseModel):

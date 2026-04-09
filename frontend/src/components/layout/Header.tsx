@@ -81,7 +81,7 @@ export default function Header({ wsConnected }: Props) {
       background: 'var(--red)',
       borderRadius: 8,
       fontSize: 9, fontWeight: 700,
-      color: '#fff',
+      color: 'var(--text-bright)',
       display: 'flex', alignItems: 'center', justifyContent: 'center',
       padding: '0 3px',
       lineHeight: 1,
@@ -110,8 +110,8 @@ export default function Header({ wsConnected }: Props) {
         <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
           <div style={{
             width: 26, height: 26,
-            background: 'linear-gradient(135deg, rgba(59,130,246,0.25) 0%, rgba(59,130,246,0.08) 100%)',
-            border: '1px solid rgba(59,130,246,0.3)',
+            background: 'linear-gradient(135deg, var(--accent-glow) 0%, var(--accent-dim) 100%)',
+            border: '1px solid var(--blue-border)',
             borderRadius: 7,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
           }}>
@@ -235,8 +235,8 @@ export default function Header({ wsConnected }: Props) {
             display: 'flex', alignItems: 'center', gap: 6,
             padding: '3px 9px',
             borderRadius: 20,
-            background: wsConnected ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)',
-            border: `1px solid ${wsConnected ? 'rgba(34,197,94,0.2)' : 'rgba(239,68,68,0.2)'}`,
+            background: wsConnected ? 'var(--green-dim)' : 'var(--red-dim)',
+            border: `1px solid ${wsConnected ? 'var(--green-border)' : 'var(--red-border)'}`,
           }}>
             {wsConnected ? (
               <Wifi size={11} color="var(--green)" />

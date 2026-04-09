@@ -71,12 +71,12 @@ const TYPE_META: Record<string, { label: string; Icon: React.ComponentType<{ siz
 const DEVICE_TYPES: DeviceType[] = ['workstation', 'server', 'printer', 'ap', 'unknown']
 
 const EVENT_COLORS: Record<string, string> = {
-  device_offline:  '#ef4444',
-  device_online:   '#22c55e',
-  port_error:      '#f59e0b',
-  latency_spike:   '#f59e0b',
-  traffic_anomaly: '#3b82f6',
-  default:         '#6b7280',
+  device_offline:  'var(--red)',
+  device_online:   'var(--green)',
+  port_error:      'var(--amber)',
+  latency_spike:   'var(--amber)',
+  traffic_anomaly: 'var(--blue)',
+  default:         'var(--text-muted)',
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

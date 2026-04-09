@@ -44,6 +44,19 @@ function useCountUp(target: number, duration = 500) {
 }
 
 // ── KPI Card ─────────────────────────────────────────────────────────────────
+const KPI_BG_MAP: Record<string, string> = {
+  'var(--red)':   'rgba(239,68,68,0.06)',
+  'var(--amber)': 'rgba(245,158,11,0.06)',
+  'var(--blue)':  'rgba(59,130,246,0.06)',
+  'var(--green)': 'rgba(34,197,94,0.06)',
+  'var(--text)':  'rgba(255,255,255,0.02)',
+}
+const KPI_BORDER_MAP: Record<string, string> = {
+  'var(--red)':   'rgba(239,68,68,0.18)',
+  'var(--amber)': 'rgba(245,158,11,0.18)',
+  'var(--blue)':  'rgba(59,130,246,0.18)',
+  'var(--green)': 'rgba(34,197,94,0.18)',
+}
 interface KPIProps {
   label:   string
   value:   number
@@ -56,14 +69,7 @@ interface KPIProps {
 function KPICard({ label, value, colour, icon: Icon, pulse, sub }: KPIProps) {
   const display = useCountUp(value)
 
-  const colourMap: Record<string, string> = {
-    'var(--red)':   'rgba(239,68,68,0.06)',
-    'var(--amber)': 'rgba(245,158,11,0.06)',
-    'var(--blue)':  'rgba(59,130,246,0.06)',
-    'var(--green)': 'rgba(34,197,94,0.06)',
-    'var(--text)':  'rgba(255,255,255,0.02)',
-  }
-  const bg = colourMap[colour] ?? 'rgba(255,255,255,0.02)'
+  const bg = KPI_BG_MAP[colour] ?? 'rgba(255,255,255,0.02)'
 
   return (
     <motion.div
@@ -74,7 +80,7 @@ function KPICard({ label, value, colour, icon: Icon, pulse, sub }: KPIProps) {
       style={{
         flex: 1, minWidth: 0,
         background: `radial-gradient(ellipse at top left, ${bg} 0%, transparent 70%), var(--bg-surface)`,
-        border: `1px solid ${colour !== 'var(--text)' ? colour.replace(')', ',0.18)').replace('var(', 'rgba(').replace('--red','239,68,68').replace('--amber','245,158,11').replace('--blue','59,130,246').replace('--green','34,197,94') : 'var(--border)'}`,
+        border: `1px solid ${KPI_BORDER_MAP[colour] ?? 'var(--border)'}`,
         borderTop: `2px solid ${colour}`,
         borderRadius: 'var(--radius-lg)',
         padding: '14px 16px',

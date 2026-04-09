@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database import get_db
 from backend.models import Source
-from backend.schemas import SourceCreate, SourceRead, SourceUpdate
+from backend.schemas import SourceBase, SourceRead, SourceUpdate
 from backend.websocket_manager import ws_manager
 
 router = APIRouter(prefix="/api/sources", tags=["sources"])
@@ -18,7 +18,7 @@ async def list_sources(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("", response_model=SourceRead, status_code=201)
-async def create_source(body: SourceCreate, db: AsyncSession = Depends(get_db)):
+async def create_source(body: SourceBase, db: AsyncSession = Depends(get_db)):
     source = Source(**body.model_dump())
     db.add(source)
     try:

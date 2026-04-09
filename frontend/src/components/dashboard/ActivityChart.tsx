@@ -62,8 +62,8 @@ export default function ActivityChart() {
         <AreaChart data={displayData} margin={{ top: 4, right: 0, bottom: 0, left: -30 }}>
           <defs>
             <linearGradient id="activityGrad" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%"  stopColor="#3b82f6" stopOpacity={0.3} />
-              <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}   />
+              <stop offset="5%"  stopColor="var(--blue)" stopOpacity={0.3} />
+              <stop offset="95%" stopColor="var(--blue)" stopOpacity={0}   />
             </linearGradient>
           </defs>
           <XAxis

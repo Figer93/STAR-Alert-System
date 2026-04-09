@@ -3,9 +3,12 @@ fping_collector — pings fixed targets every FPING_INTERVAL seconds and writes
 rtt_ms / packet_loss_pct to the Supabase latency_metrics table.
 
 Targets:
-  - GATEWAY_IP    → category 'gateway'
-  - ISP_GATEWAY_IP (optional) → category 'wan'
-  - 8.8.8.8, 1.1.1.1  → category 'wan'
+  - GATEWAY_IP              → category 'gateway'
+  - WAN1_GATEWAY_IP         → category 'wan'  (primary ISP gateway)
+  - WAN2_GATEWAY_IP         → category 'wan'  (secondary ISP gateway)
+  - ISP_GATEWAY_IP          → category 'wan'  (legacy single-WAN; ignored when WAN1/WAN2 set)
+  - INTERNAL_IPS            → category 'internal' (comma-separated, e.g. DC servers)
+  - WAN_MONITOR_IPS (comma-separated, default "8.8.8.8,1.1.1.1") → category 'wan'
 
 fping output format parsed:
   192.168.1.1 : xmt/rcv/%loss = 3/3/0%, min/avg/max = 0.33/0.40/0.54
@@ -30,12 +33,23 @@ log = logging.getLogger(__name__)
 
 SUPABASE_URL    = os.environ["SUPABASE_URL"]
 SUPABASE_KEY    = os.environ["SUPABASE_KEY"]
-GATEWAY_IP      = os.environ.get("GATEWAY_IP", "")
-ISP_GATEWAY_IP  = os.environ.get("ISP_GATEWAY_IP", "").strip()
+GATEWAY_IP      = os.environ.get("GATEWAY_IP", "").strip()
+WAN1_GATEWAY_IP = os.environ.get("WAN1_GATEWAY_IP", "").strip()
+WAN2_GATEWAY_IP = os.environ.get("WAN2_GATEWAY_IP", "").strip()
+ISP_GATEWAY_IP  = os.environ.get("ISP_GATEWAY_IP", "").strip()  # legacy single-WAN
+INTERNAL_IPS    = [
+    ip.strip()
+    for ip in os.environ.get("INTERNAL_IPS", "").split(",")
+    if ip.strip()
+]
 FPING_INTERVAL  = int(os.environ.get("FPING_INTERVAL", "30"))
 
-# Static WAN targets always included.
-_WAN_IPS = {"8.8.8.8", "1.1.1.1"}
+# WAN monitoring targets — comma-separated env var, defaults to 8.8.8.8,1.1.1.1
+_WAN_IPS = {
+    ip.strip()
+    for ip in os.environ.get("WAN_MONITOR_IPS", "8.8.8.8,1.1.1.1").split(",")
+    if ip.strip()
+}
 
 # Regex for fping summary line:
 #   192.168.1.1 : xmt/rcv/%loss = 3/3/0%, min/avg/max = 0.33/0.40/0.54
@@ -46,13 +60,24 @@ _FPING_RE = re.compile(
 
 
 def _build_targets() -> dict[str, str]:
-    """Return {ip: category} dict of fixed targets."""
+    """Return {ip: category} dict of all targets."""
     targets: dict[str, str] = {}
 
     if GATEWAY_IP:
         targets[GATEWAY_IP] = "gateway"
-    if ISP_GATEWAY_IP:
+
+    # Dual-WAN: prefer WAN1/WAN2 env vars; fall back to legacy ISP_GATEWAY_IP.
+    if WAN1_GATEWAY_IP or WAN2_GATEWAY_IP:
+        if WAN1_GATEWAY_IP:
+            targets[WAN1_GATEWAY_IP] = "wan"
+        if WAN2_GATEWAY_IP:
+            targets[WAN2_GATEWAY_IP] = "wan"
+    elif ISP_GATEWAY_IP:
         targets[ISP_GATEWAY_IP] = "wan"
+
+    for ip in INTERNAL_IPS:
+        targets[ip] = "internal"
+
     for ip in _WAN_IPS:
         targets[ip] = "wan"
 

@@ -42,6 +42,12 @@
   --green-dim:    rgba(34, 197, 94, 0.08);
   --gray-dim:     rgba(100, 116, 139, 0.08);
 
+  /* Severity — borders (0.20 opacity) */
+  --red-border:   rgba(239, 68, 68, 0.20);
+  --amber-border: rgba(245, 158, 11, 0.20);
+  --blue-border:  rgba(59, 130, 246, 0.20);
+  --green-border: rgba(34, 197, 94, 0.20);
+
   /* Severity — glow */
   --glow-red:     0 0 16px rgba(239, 68, 68, 0.28), 0 0 4px rgba(239, 68, 68, 0.20);
   --glow-amber:   0 0 16px rgba(245, 158, 11, 0.28), 0 0 4px rgba(245, 158, 11, 0.18);

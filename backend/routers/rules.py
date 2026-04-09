@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database import get_db
 from backend.models import Rule
-from backend.schemas import RuleCreate, RuleRead, RuleUpdate
+from backend.schemas import RuleBase, RuleRead, RuleUpdate
 
 router = APIRouter(prefix="/api/rules", tags=["rules"])
 
@@ -16,7 +16,7 @@ async def list_rules(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("", response_model=RuleRead, status_code=201)
-async def create_rule(body: RuleCreate, db: AsyncSession = Depends(get_db)):
+async def create_rule(body: RuleBase, db: AsyncSession = Depends(get_db)):
     rule = Rule(**body.model_dump())
     db.add(rule)
     await db.commit()

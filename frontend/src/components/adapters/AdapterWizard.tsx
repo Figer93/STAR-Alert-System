@@ -227,7 +227,7 @@ export default function AdapterWizard({ onClose, onComplete }: Props) {
                     </div>
                   ))}
                   {adapter.id === 'pfsense' && window.location.protocol === 'https:' && (
-                    <div style={{ background: 'rgba(234,179,8,0.08)', border: '1px solid rgba(234,179,8,0.3)', borderRadius: 'var(--radius-sm)', padding: '10px 12px', fontSize: 11, color: '#eab308', display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                    <div style={{ background: 'var(--amber-dim)', border: '1px solid var(--amber-border)', borderRadius: 'var(--radius-sm)', padding: '10px 12px', fontSize: 11, color: 'var(--amber)', display: 'flex', gap: 8, alignItems: 'flex-start' }}>
                       <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
                       <span><strong>Cloud deployment detected.</strong> Railway does not expose UDP ports — the pfSense syslog listener will not receive data. Consider a self-hosted deployment for pfSense integration.</span>
                     </div>

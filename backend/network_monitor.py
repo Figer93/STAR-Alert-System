@@ -51,18 +51,27 @@ _TRAFFIC_ANOMALY_MULTIPLIER = 5.0     # × historical average
 _TRAFFIC_HISTORY_MIN_AVG_BYTES = 102_400  # 100 KB — ignore very-low-traffic devices
 
 # ── Latency polling targets ───────────────────────────────────────────────────
-# Static IP → role label.  WAN_GATEWAY_IP from settings is merged in at runtime.
+# Named constants for static internal/DNS IPs.  Changing an IP here propagates
+# to _LATENCY_TARGET_ROLES, _INTERNAL_IPS, _EXTERNAL_DNS, and root-cause logic.
+_IP_LAN_GW       = "10.2.1.253"   # pfSense (LAN gateway)
+_IP_DC_PRIMARY   = "10.2.1.5"     # Primary DC (VLAN 1)
+_IP_DC_SECONDARY = "10.2.1.3"     # Secondary DC (VLAN 1)
+_IP_VLAN2_DC     = "10.2.2.100"   # DC (VLAN 2)
+_IP_DNS_CF       = "1.1.1.1"      # Cloudflare DNS
+_IP_DNS_GOOGLE   = "8.8.8.8"      # Google DNS
 
+# Static IP → role label.  WAN gateway IPs from settings are merged in at runtime
+# inside _check_internal_latency so all configured targets are polled together.
 _LATENCY_TARGET_ROLES: dict[str, str] = {
-    "10.2.1.253":  "pfSense (LAN gateway)",
-    "10.2.1.5":    "Primary DC (VLAN 1)",
-    "10.2.1.3":    "Secondary DC (VLAN 1)",
-    "10.2.2.100":  "DC (VLAN 2)",
-    "1.1.1.1":     "Cloudflare DNS",
-    "8.8.8.8":     "Google DNS",
+    _IP_LAN_GW:       "pfSense (LAN gateway)",
+    _IP_DC_PRIMARY:   "Primary DC (VLAN 1)",
+    _IP_DC_SECONDARY: "Secondary DC (VLAN 1)",
+    _IP_VLAN2_DC:     "DC (VLAN 2)",
+    _IP_DNS_CF:       "Cloudflare DNS",
+    _IP_DNS_GOOGLE:   "Google DNS",
 }
-_INTERNAL_IPS = frozenset({"10.2.1.253", "10.2.1.5", "10.2.1.3", "10.2.2.100"})
-_EXTERNAL_DNS  = frozenset({"1.1.1.1", "8.8.8.8"})
+_INTERNAL_IPS = frozenset({_IP_LAN_GW, _IP_DC_PRIMARY, _IP_DC_SECONDARY, _IP_VLAN2_DC})
+_EXTERNAL_DNS  = frozenset({_IP_DNS_CF, _IP_DNS_GOOGLE})
 
 _LATENCY_CONSECUTIVE_THRESHOLD = 3    # alert after N consecutive readings above threshold
 _LATENCY_COOLDOWN_MINUTES       = 10  # suppress re-alert for N min after a target recovers
@@ -679,27 +688,27 @@ def _classify_root_cause(affected: set[str]) -> str:
     if _INTERNAL_IPS <= affected and not dns_hit and not any_wan_hit:
         return "ALL_INTERNAL"
 
-    # PFSENSE — only 10.2.1.253 spikes
-    if affected == {"10.2.1.253"}:
+    # PFSENSE — only LAN gateway spikes
+    if affected == {_IP_LAN_GW}:
         return "PFSENSE"
 
-    # DC_PRIMARY — 10.2.1.5 spikes; pfSense + secondary DC not affected
+    # DC_PRIMARY — primary DC spikes; LAN gateway + secondary DC not affected
     if (
-        "10.2.1.5" in affected
-        and "10.2.1.253" not in affected
-        and "10.2.1.3" not in affected
+        _IP_DC_PRIMARY in affected
+        and _IP_LAN_GW not in affected
+        and _IP_DC_SECONDARY not in affected
         and not dns_hit and not any_wan_hit
     ):
         return "DC_PRIMARY"
 
-    # DC_SECONDARY — 10.2.1.3 alone
-    if affected == {"10.2.1.3"}:
+    # DC_SECONDARY — secondary DC alone
+    if affected == {_IP_DC_SECONDARY}:
         return "DC_SECONDARY"
 
-    # VLAN2_DC — 10.2.2.100 spikes; VLAN 1 targets OK
+    # VLAN2_DC — VLAN 2 DC spikes; VLAN 1 targets OK
     if (
-        "10.2.2.100" in affected
-        and not ({"10.2.1.253", "10.2.1.5", "10.2.1.3"} & affected)
+        _IP_VLAN2_DC in affected
+        and not ({_IP_LAN_GW, _IP_DC_PRIMARY, _IP_DC_SECONDARY} & affected)
         and not dns_hit and not any_wan_hit
     ):
         return "VLAN2_DC"
@@ -711,7 +720,7 @@ async def _check_internal_latency(db: AsyncSession) -> None:
     """
     Check 4: Per-target latency spike detection with consecutive-count guard.
 
-    Polls all seven ST&R targets (plus optional WAN_GATEWAY_IP).
+    Polls all static latency targets merged with configured WAN gateway IPs.
     An alert fires only after _LATENCY_CONSECUTIVE_THRESHOLD (3) consecutive
     60-second readings above _LATENCY_THRESHOLD_MS (50 ms) for a given target.
     After a target recovers, a _LATENCY_COOLDOWN_MINUTES (10 min) cooldown

@@ -1,5 +1,6 @@
 import logging
 from datetime import datetime, timezone
+from typing import Literal
 
 from fastapi import APIRouter
 from pydantic import BaseModel
@@ -10,8 +11,8 @@ router = APIRouter(prefix="/api/notifications", tags=["notifications"])
 
 
 class TestNotifRequest(BaseModel):
-    channel: str   # "telegram" | "email"
-    severity: str = "warning"
+    channel: Literal["telegram", "email"]
+    severity: Literal["critical", "warning", "info", "ok"] = "warning"
 
 
 class TestNotifResponse(BaseModel):
@@ -22,9 +23,6 @@ class TestNotifResponse(BaseModel):
 @router.post("/test", response_model=TestNotifResponse)
 async def send_test_notification(body: TestNotifRequest) -> TestNotifResponse:
     """Send a test notification to verify channel configuration."""
-
-    if body.channel not in ("telegram", "email"):
-        return TestNotifResponse(success=False, error=f"Unknown channel: {body.channel}")
 
     # Build a lightweight fake alert (no DB row needed)
     class _FakeSource:
