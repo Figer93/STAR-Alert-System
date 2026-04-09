@@ -892,10 +892,12 @@ async def get_latency(
             target_filter_sql = "AND target_name = ANY(:target_names)"
             params["target_names"] = names
 
-    # f-string is safe here: lookback and bucket come from our whitelist dict
+    # latency_metrics is NOT a TimescaleDB hypertable on this Supabase plan,
+    # so time_bucket() is unavailable. Use date_trunc() directly.
+    trunc_unit = _PERIOD_DATE_TRUNC[period]
     sql = f"""
         SELECT
-            time_bucket('{bucket}', time) AS bucket,
+            date_trunc('{trunc_unit}', time) AS bucket,
             target_name,
             AVG(rtt_ms)           AS avg_rtt,
             AVG(packet_loss_pct)  AS avg_loss
@@ -906,26 +908,7 @@ async def get_latency(
         ORDER BY bucket ASC
     """
     rows = await _exec(db, sql, params)
-    logger.info("latency time_bucket query period=%s returned %d rows", period, len(rows))
-
-    if not rows:
-        # time_bucket() requires the TimescaleDB extension. Fall back to date_trunc()
-        # which works on standard Supabase PostgreSQL without TimescaleDB.
-        trunc_unit = _PERIOD_DATE_TRUNC[period]
-        sql_datetunc = f"""
-            SELECT
-                date_trunc('{trunc_unit}', time) AS bucket,
-                target_name,
-                AVG(rtt_ms)           AS avg_rtt,
-                AVG(packet_loss_pct)  AS avg_loss
-            FROM latency_metrics
-            WHERE time >= NOW() - INTERVAL '{lookback}'
-              {target_filter_sql}
-            GROUP BY bucket, target_name
-            ORDER BY bucket ASC
-        """
-        rows = await _exec(db, sql_datetunc, params)
-        logger.info("latency date_trunc('%s') fallback returned %d rows", trunc_unit, len(rows))
+    logger.info("latency query period=%s trunc=%s returned %d rows", period, trunc_unit, len(rows))
 
     if not rows:
         # No aggregated data yet (collector just started or table is empty).

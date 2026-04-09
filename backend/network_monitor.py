@@ -68,7 +68,9 @@ _LATENCY_CONSECUTIVE_THRESHOLD = 3    # alert after N consecutive readings above
 _LATENCY_COOLDOWN_MINUTES       = 10  # suppress re-alert for N min after a target recovers
 
 _ROOT_CAUSE_LABELS: dict[str, str] = {
-    "WAN_ISP":       "WAN / ISP Outage",
+    "WAN1_DOWN":     "WAN1 Outage (Primary ISP)",
+    "WAN2_DOWN":     "WAN2 Outage (Secondary ISP)",
+    "WAN_ISP":       "WAN / ISP Outage (both uplinks)",
     "WAN_LINE":      "WAN Line Fault (physical CPE-to-pfSense)",
     "PFSENSE":       "pfSense Overload / LAN Interface",
     "DC_PRIMARY":    "Primary DC Overload / NIC Issue",
@@ -83,8 +85,9 @@ _ROOT_CAUSE_LABELS: dict[str, str] = {
 _collector_online_state: Optional[bool] = None
 
 # Per-target latency tracking (consecutive count + post-resolve cooldown)
-_latency_consecutive: dict[str, int]      = {}  # ip → consecutive readings above threshold
-_latency_cooldown:    dict[str, datetime] = {}  # ip → cooldown-expiry timestamp
+_latency_consecutive:         dict[str, int]      = {}  # ip → consecutive above-threshold readings
+_latency_recover_consecutive: dict[str, int]      = {}  # ip → consecutive below-threshold readings
+_latency_cooldown:            dict[str, datetime] = {}  # ip → cooldown-expiry timestamp
 
 # ── Telegram rate limiting ────────────────────────────────────────────────────
 # Per-device cooldown: at most 1 new-incident alert per (category, entity) per hour.
@@ -633,26 +636,47 @@ async def _check_devices_offline(db: AsyncSession) -> None:
 
 def _classify_root_cause(affected: set[str]) -> str:
     """Map the set of latency-spiking IPs to a root-cause label."""
-    wan_gw        = settings.WAN_GATEWAY_IP.strip()
+    wan1          = settings.WAN1_GATEWAY_IP.strip()
+    wan2          = settings.WAN2_GATEWAY_IP.strip()
+    wan_legacy    = settings.WAN_GATEWAY_IP.strip()
+
+    wan1_hit      = bool(wan1 and wan1 in affected)
+    wan2_hit      = bool(wan2 and wan2 in affected)
+    wan_legacy_hit = bool(wan_legacy and wan_legacy in affected and wan_legacy not in (wan1, wan2))
+    any_wan_hit   = wan1_hit or wan2_hit or wan_legacy_hit
+
+    all_wan_ips   = {ip for ip in (wan1, wan2, wan_legacy) if ip}
     internals_hit = _INTERNAL_IPS & affected
     dns_hit       = _EXTERNAL_DNS & affected
-    wan_hit       = bool(wan_gw and wan_gw in affected)
-    all_wan       = _EXTERNAL_DNS | ({wan_gw} if wan_gw else set())
+    all_external  = _EXTERNAL_DNS | all_wan_ips
 
     # FULL_OUTAGE — all known targets spike simultaneously
-    if (_INTERNAL_IPS <= affected) and (not all_wan or all_wan <= affected):
+    if (_INTERNAL_IPS <= affected) and (not all_external or all_external <= affected):
         return "FULL_OUTAGE"
 
-    # WAN_ISP — 1.1.1.1 + 8.8.8.8 + WAN gateway all spike, internals OK
-    if dns_hit == _EXTERNAL_DNS and wan_hit and not internals_hit:
-        return "WAN_ISP"
+    # Dual-WAN site: distinguish per-uplink failures
+    if wan1 and wan2:
+        # WAN_ISP — both uplinks + all external DNS spike, internals OK
+        if wan1_hit and wan2_hit and dns_hit == _EXTERNAL_DNS and not internals_hit:
+            return "WAN_ISP"
+        # WAN1_DOWN — primary uplink + all DNS spike, WAN2 not affected, internals OK
+        if wan1_hit and not wan2_hit and dns_hit == _EXTERNAL_DNS and not internals_hit:
+            return "WAN1_DOWN"
+        # WAN2_DOWN — secondary uplink spikes, WAN1 not affected, internals OK
+        if wan2_hit and not wan1_hit and not internals_hit:
+            return "WAN2_DOWN"
+    else:
+        # Single-WAN (legacy WAN_GATEWAY_IP): WAN gateway + all DNS spike, internals OK
+        if dns_hit == _EXTERNAL_DNS and any_wan_hit and not internals_hit:
+            return "WAN_ISP"
 
-    # WAN_LINE — WAN gateway spikes but 1.1.1.1 + 8.8.8.8 OK, internals OK
-    if wan_hit and not dns_hit and not internals_hit:
+    # WAN_LINE — a WAN gateway spikes but external DNS OK and internals OK
+    # (physical fault between CPE and pfSense, not ISP-side)
+    if any_wan_hit and not dns_hit and not internals_hit:
         return "WAN_LINE"
 
     # ALL_INTERNAL — all four internal IPs spike, no external
-    if _INTERNAL_IPS <= affected and not dns_hit and not wan_hit:
+    if _INTERNAL_IPS <= affected and not dns_hit and not any_wan_hit:
         return "ALL_INTERNAL"
 
     # PFSENSE — only 10.2.1.253 spikes
@@ -664,7 +688,7 @@ def _classify_root_cause(affected: set[str]) -> str:
         "10.2.1.5" in affected
         and "10.2.1.253" not in affected
         and "10.2.1.3" not in affected
-        and not dns_hit and not wan_hit
+        and not dns_hit and not any_wan_hit
     ):
         return "DC_PRIMARY"
 
@@ -676,7 +700,7 @@ def _classify_root_cause(affected: set[str]) -> str:
     if (
         "10.2.2.100" in affected
         and not ({"10.2.1.253", "10.2.1.5", "10.2.1.3"} & affected)
-        and not dns_hit and not wan_hit
+        and not dns_hit and not any_wan_hit
     ):
         return "VLAN2_DC"
 
@@ -696,11 +720,18 @@ async def _check_internal_latency(db: AsyncSession) -> None:
     """
     now = datetime.now(timezone.utc)
 
-    # Merge static targets with optional WAN gateway
+    # Merge static targets with configured WAN gateways
     targets: dict[str, str] = dict(_LATENCY_TARGET_ROLES)
-    wan_gw = settings.WAN_GATEWAY_IP.strip()
-    if wan_gw:
-        targets[wan_gw] = "WAN Gateway (ISP)"
+    wan1 = settings.WAN1_GATEWAY_IP.strip()
+    wan2 = settings.WAN2_GATEWAY_IP.strip()
+    if wan1:
+        targets[wan1] = "WAN1 Gateway (Primary ISP)"
+    if wan2:
+        targets[wan2] = "WAN2 Gateway (Secondary ISP)"
+    # Legacy single-WAN env var — add only if neither WAN1 nor WAN2 is set
+    wan_legacy = settings.WAN_GATEWAY_IP.strip()
+    if wan_legacy and not wan1 and not wan2:
+        targets[wan_legacy] = "WAN Gateway (ISP)"
 
     # Query avg RTT per target IP over the last 3 minutes
     rows = await _exec(db, """
@@ -722,6 +753,7 @@ async def _check_internal_latency(db: AsyncSession) -> None:
         rtt = rtt_by_ip.get(ip)
         if rtt is not None and rtt > _LATENCY_THRESHOLD_MS:
             _latency_consecutive[ip] = _latency_consecutive.get(ip, 0) + 1
+            _latency_recover_consecutive[ip] = 0
             if _latency_consecutive[ip] >= _LATENCY_CONSECUTIVE_THRESHOLD:
                 cooldown_until = _latency_cooldown.get(ip)
                 if cooldown_until is None or now >= cooldown_until:
@@ -729,6 +761,7 @@ async def _check_internal_latency(db: AsyncSession) -> None:
         else:
             prev_count = _latency_consecutive.get(ip, 0)
             _latency_consecutive[ip] = 0
+            _latency_recover_consecutive[ip] = _latency_recover_consecutive.get(ip, 0) + 1
             if prev_count >= _LATENCY_CONSECUTIVE_THRESHOLD:
                 # Was alerting — start post-resolve cooldown
                 _latency_cooldown[ip] = now + timedelta(minutes=_LATENCY_COOLDOWN_MINUTES)
@@ -789,8 +822,28 @@ async def _check_internal_latency(db: AsyncSession) -> None:
 
     elif open_inc:
         await _resolve_incident(db, open_inc["id"])
-        await _send_telegram(f"✅ Resolved: {open_inc['title']}")
-        logger.info("Internal latency spike resolved")
+
+        # Suppress the resolve Telegram if:
+        #   (a) the last alert was sent within the cooldown window, AND
+        #   (b) fewer than 2 consecutive below-threshold readings have been
+        #       recorded — i.e., this may be a brief dip, not a true recovery.
+        prev_alert_time = _tg_sent_keys.get("internal_latency")
+        within_cooldown = (
+            prev_alert_time is not None
+            and (now - prev_alert_time).total_seconds() < _LATENCY_COOLDOWN_MINUTES * 60
+        )
+        min_recover = min(
+            (_latency_recover_consecutive.get(ip, 0) for ip in targets),
+            default=2,
+        )
+        if within_cooldown and min_recover < 2:
+            logger.info(
+                "Internal latency spike resolved — Telegram suppressed "
+                "(within cooldown, recover_count=%d)", min_recover,
+            )
+        else:
+            await _send_telegram(f"✅ Resolved: {open_inc['title']}")
+            logger.info("Internal latency spike resolved")
 
 
 async def _check_collector_offline(db: AsyncSession) -> None:

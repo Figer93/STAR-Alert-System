@@ -39,9 +39,11 @@ class Settings(BaseSettings):
     # Leave blank to omit links from notifications.
     STAR_URL: str = ""
 
-    # ISP gateway IP (first WAN hop) — read from pfSense Status → Interfaces → WAN.
-    # Leave blank to omit the WAN gateway from latency polling.
-    WAN_GATEWAY_IP: str = ""
+    # ISP gateway IPs (first WAN hop).  Set WAN1/WAN2 for dual-uplink sites.
+    # WAN_GATEWAY_IP is kept for backward compatibility (single-uplink sites).
+    WAN_GATEWAY_IP: str = ""   # legacy single-WAN — superseded by WAN1/WAN2 below
+    WAN1_GATEWAY_IP: str = ""  # primary WAN gateway (WANGW)
+    WAN2_GATEWAY_IP: str = ""  # secondary WAN gateway (WAN2_GATEWAY)
 
     # UniFi Cloud API (api.ui.com)
     # Leave UNIFI_CLOUD_API_KEY blank to disable cloud polling.
