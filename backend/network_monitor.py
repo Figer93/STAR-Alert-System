@@ -836,7 +836,7 @@ async def _check_internal_latency(db: AsyncSession) -> None:
             (_latency_recover_consecutive.get(ip, 0) for ip in targets),
             default=2,
         )
-        if within_cooldown and min_recover < 2:
+        if within_cooldown or min_recover < 2:
             logger.info(
                 "Internal latency spike resolved — Telegram suppressed "
                 "(within cooldown, recover_count=%d)", min_recover,
@@ -990,7 +990,14 @@ async def run_network_checks() -> None:
     Sleeps 60 seconds between cycles.  Each check runs in its own DB session
     so that a failure in one does not affect the others.
     """
-    logger.info("Network monitor starting — %d checks registered", len(_CHECKS))
+    wan1 = settings.WAN1_GATEWAY_IP.strip()
+    wan2 = settings.WAN2_GATEWAY_IP.strip()
+    wan_legacy = settings.WAN_GATEWAY_IP.strip()
+    n_wan = bool(wan1) + bool(wan2) or (1 if (wan_legacy and not wan1 and not wan2) else 0)
+    logger.info(
+        "Network monitor starting — %d checks registered",
+        len(_LATENCY_TARGET_ROLES) + n_wan,
+    )
 
     while True:
         await asyncio.sleep(60)

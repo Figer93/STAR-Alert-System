@@ -882,7 +882,7 @@ async def get_latency(
     if not _IS_POSTGRES:
         return LatencyResponse(targets=[], series=[])
 
-    lookback, bucket = _PERIOD_CONFIG[period]
+    lookback, _ = _PERIOD_CONFIG[period]
 
     target_filter_sql = ""
     params: dict = {}
