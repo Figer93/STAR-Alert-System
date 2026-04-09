@@ -1,6 +1,7 @@
 [build]
 builder = "dockerfile"
 dockerfilePath = "Dockerfile.backend"
+watchPatterns = ["/backend/**", "/migrations/**", "/requirements.txt", "/alembic.ini"]
 
 [deploy]
 startCommand = "sh -c 'alembic upgrade head && uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000}'"
