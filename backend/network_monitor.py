@@ -767,6 +767,17 @@ async def _check_internal_latency(db: AsyncSession) -> None:
                 _latency_cooldown[ip] = now + timedelta(minutes=_LATENCY_COOLDOWN_MINUTES)
 
     open_inc = await _get_open_incident(db, "internal_latency")
+    if open_inc is None:
+        # Fallback: find any open internal_latency incident regardless of affected_ip.
+        # _get_open_incident adds "affected_ip IS NULL" for network-wide categories,
+        # which silently misses legacy incidents created with affected_ip set (e.g.
+        # incidents opened before the multi-target refactor that stored the gateway IP).
+        open_inc = await _exec_one(db, """
+            SELECT id::text AS id, title, severity, started_at
+            FROM network_incidents
+            WHERE resolved_at IS NULL AND category = 'internal_latency'
+            ORDER BY started_at DESC LIMIT 1
+        """)
 
     if alerting:
         if open_inc:

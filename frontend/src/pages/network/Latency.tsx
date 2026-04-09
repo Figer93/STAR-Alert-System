@@ -42,7 +42,19 @@ const PERIODS = [
 ] as const
 type Period = typeof PERIODS[number]['value']
 
-const TARGET_COLORS = ['#22c55e', '#3b82f6', '#a855f7', '#f59e0b', '#ef4444', '#06b6d4']
+const TARGET_COLORS = [
+  '#22c55e', // green
+  '#3b82f6', // blue
+  '#a855f7', // purple
+  '#f59e0b', // amber
+  '#ef4444', // red
+  '#06b6d4', // cyan
+  '#f97316', // orange
+  '#ec4899', // pink
+]
+
+// WAN (external) target types; everything else is LAN (internal)
+const WAN_TYPES = new Set(['wan', 'dns'])
 
 const SEG_COLORS: Record<TimelineSegment['health'], string> = {
   healthy:  '#22c55e',
@@ -103,11 +115,12 @@ function fmtRtt(v: number | null): string {
 function computeStats(
   series: LatencyResponse['series'],
   targets: string[],
+  colorMap: Record<string, string>,
 ): TargetStats[] {
-  return targets.map((target, i) => {
+  return targets.map((target) => {
     const rtts   = series.map(r => getRtt(r, target)).filter((v): v is number => v != null)
     const losses = series.map(r => getLoss(r, target)).filter((v): v is number => v != null)
-    const color  = TARGET_COLORS[i % TARGET_COLORS.length]
+    const color  = colorMap[target] ?? TARGET_COLORS[0]
 
     if (!rtts.length) {
       return { target, color, avgRtt: null, p95Rtt: null, maxRtt: null, avgLoss: null, uptime: 100, status: 'no-data' }
@@ -219,12 +232,13 @@ function interpret(stats: TargetStats[], series: LatencyResponse['series']): Int
 interface TooltipEntry { dataKey: string; value: number | null | undefined; color: string }
 
 function ChartTooltip({
-  active, payload, label, visibleTargets, period,
+  active, payload, label, visibleTargets, colorMap, period,
 }: {
   active?:         boolean
   payload?:        TooltipEntry[]
   label?:          string
   visibleTargets:  string[]
+  colorMap:        Record<string, string>
   period:          Period
 }) {
   if (!active || !payload?.length) return null
@@ -242,11 +256,11 @@ function ChartTooltip({
       <p style={{ color: 'var(--text-dim)', margin: '0 0 6px', fontSize: 10, fontWeight: 700, textTransform: 'uppercase' }}>
         {fmtTime(label, period)}
       </p>
-      {visibleTargets.map((target, i) => {
+      {visibleTargets.map((target) => {
         const key       = sanitise(target)
         const rttEntry  = payload.find(p => p.dataKey === `${key}_rtt`)
         const lossEntry = payload.find(p => p.dataKey === `${key}_loss`)
-        const color     = TARGET_COLORS[i % TARGET_COLORS.length]
+        const color     = colorMap[target] ?? TARGET_COLORS[0]
         const rttVal    = rttEntry?.value
         const lossVal   = lossEntry?.value
 
@@ -343,9 +357,10 @@ interface TimelineTip {
   y:       number
 }
 
-function OutageTimeline({ series, targets }: {
-  series:  LatencyResponse['series']
-  targets: string[]
+function OutageTimeline({ series, targets, colorMap }: {
+  series:    LatencyResponse['series']
+  targets:   string[]
+  colorMap:  Record<string, string>
 }) {
   const [tip, setTip] = useState<TimelineTip | null>(null)
 
@@ -367,13 +382,14 @@ function OutageTimeline({ series, targets }: {
       </p>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {targets.map((target, i) => {
-          const segs = buildSegments(series, target)
+        {targets.map((target) => {
+          const segs  = buildSegments(series, target)
+          const color = colorMap[target] ?? TARGET_COLORS[0]
           return (
             <div key={target} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               {/* Label */}
               <span style={{
-                fontSize: 11, color: TARGET_COLORS[i % TARGET_COLORS.length],
+                fontSize: 11, color,
                 fontWeight: 600, width: 100, flexShrink: 0,
                 overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
               }}>
@@ -579,13 +595,9 @@ export default function NetworkLatency() {
         if (!cancelled) {
           setData(d)
           setError(false)
-          // Initialise checkboxes once: default to gateway + known public DNS only
+          // Initialise checkboxes once: default to all targets
           if (!checkedInit && d.targets.length) {
-            const KEY_WAN = new Set(['8.8.8.8', '1.1.1.1'])
-            const defaults = d.targets.filter(t =>
-              d.target_types[t] === 'gateway' || KEY_WAN.has(t)
-            )
-            setChecked(new Set(defaults.length ? defaults : d.targets))
+            setChecked(new Set(d.targets))
             setCheckedInit(true)
           }
         }
@@ -606,9 +618,18 @@ export default function NetworkLatency() {
   const visibleTargets = allTargets.filter(t => checked.has(t))
   const series         = data?.series ?? []
 
+  // Stable color map: keyed by target name, derived from allTargets order.
+  // Using allTargets (not visibleTargets) ensures a target's color never
+  // shifts when other targets are toggled on/off.
+  const colorMap = useMemo(() => {
+    const m: Record<string, string> = {}
+    allTargets.forEach((t, i) => { m[t] = TARGET_COLORS[i % TARGET_COLORS.length] })
+    return m
+  }, [allTargets])
+
   const stats = useMemo(
-    () => computeStats(series, visibleTargets),
-    [series, visibleTargets]
+    () => computeStats(series, visibleTargets, colorMap),
+    [series, visibleTargets, colorMap]
   )
 
   // Chart data: only keep time + visible targets' keys
@@ -702,41 +723,63 @@ export default function NetworkLatency() {
           ))}
         </div>
 
-        {/* Target checkboxes */}
-        {allTargets.length > 0 && (
-          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-            {allTargets.map((t, i) => {
-              const color = TARGET_COLORS[i % TARGET_COLORS.length]
-              const on    = checked.has(t)
-              return (
-                <label
-                  key={t}
-                  style={{ display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer', userSelect: 'none' }}
-                >
-                  <div
-                    onClick={() => toggleTarget(t)}
-                    style={{
-                      width: 14, height: 14, borderRadius: 3, flexShrink: 0,
-                      background:  on ? color : 'transparent',
-                      border:      `2px solid ${color}`,
-                      display:     'flex', alignItems: 'center', justifyContent: 'center',
-                      transition:  'background 0.12s',
-                      cursor:      'pointer',
-                    }}
-                  >
-                    {on && <span style={{ color: '#000', fontSize: 9, fontWeight: 900, lineHeight: 1 }}>✓</span>}
-                  </div>
-                  <span
-                    onClick={() => toggleTarget(t)}
-                    style={{ fontSize: 11, color: on ? color : 'var(--text-dim)', fontWeight: on ? 600 : 400 }}
-                  >
-                    {t}
-                  </span>
-                </label>
-              )
-            })}
-          </div>
-        )}
+        {/* Target checkboxes — grouped by WAN (external) / LAN (internal) */}
+        {allTargets.length > 0 && data && (() => {
+          const wanGroup = allTargets.filter(t => WAN_TYPES.has(data.target_types[t] ?? ''))
+          const lanGroup = allTargets.filter(t => !WAN_TYPES.has(data.target_types[t] ?? ''))
+
+          const renderGroup = (label: string, group: string[]) => {
+            if (!group.length) return null
+            return (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <span style={{
+                  fontSize: 10, fontWeight: 700, color: 'var(--text-dim)',
+                  textTransform: 'uppercase', letterSpacing: '0.08em',
+                  flexShrink: 0, minWidth: 28,
+                }}>
+                  {label}
+                </span>
+                {group.map(t => {
+                  const color = colorMap[t] ?? TARGET_COLORS[0]
+                  const on    = checked.has(t)
+                  return (
+                    <label
+                      key={t}
+                      style={{ display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer', userSelect: 'none' }}
+                    >
+                      <div
+                        onClick={() => toggleTarget(t)}
+                        style={{
+                          width: 14, height: 14, borderRadius: 3, flexShrink: 0,
+                          background:  on ? color : 'transparent',
+                          border:      `2px solid ${color}`,
+                          display:     'flex', alignItems: 'center', justifyContent: 'center',
+                          transition:  'background 0.12s',
+                          cursor:      'pointer',
+                        }}
+                      >
+                        {on && <span style={{ color: '#000', fontSize: 9, fontWeight: 900, lineHeight: 1 }}>✓</span>}
+                      </div>
+                      <span
+                        onClick={() => toggleTarget(t)}
+                        style={{ fontSize: 11, color: on ? color : 'var(--text-dim)', fontWeight: on ? 600 : 400 }}
+                      >
+                        {t}
+                      </span>
+                    </label>
+                  )
+                })}
+              </div>
+            )
+          }
+
+          return (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+              {renderGroup('WAN', wanGroup)}
+              {renderGroup('LAN', lanGroup)}
+            </div>
+          )
+        })()}
       </div>
 
       {/* ── Loading skeleton ────────────────────────────────────────────────── */}
@@ -802,6 +845,7 @@ export default function NetworkLatency() {
                     content={
                       <ChartTooltip
                         visibleTargets={visibleTargets}
+                        colorMap={colorMap}
                         period={period}
                       />
                     }
@@ -828,12 +872,12 @@ export default function NetworkLatency() {
                   />
 
                   {/* RTT oscilloscope lines (1px, no fill) */}
-                  {visibleTargets.map((t, i) => (
+                  {visibleTargets.map((t) => (
                     <Line
                       key={`${t}_rtt`}
                       yAxisId="rtt"
                       dataKey={`${sanitise(t)}_rtt`}
-                      stroke={TARGET_COLORS[i % TARGET_COLORS.length]}
+                      stroke={colorMap[t] ?? TARGET_COLORS[0]}
                       strokeWidth={1}
                       dot={false}
                       connectNulls
@@ -863,7 +907,7 @@ export default function NetworkLatency() {
 
             {/* ── Outage timeline ───────────────────────────────────────────── */}
             {series.length > 1 && (
-              <OutageTimeline series={series} targets={visibleTargets} />
+              <OutageTimeline series={series} targets={visibleTargets} colorMap={colorMap} />
             )}
           </div>
 
