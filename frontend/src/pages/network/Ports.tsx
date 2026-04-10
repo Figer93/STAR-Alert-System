@@ -684,6 +684,8 @@ export default function NetworkPorts() {
     <>
       <div style={{
         padding:       14,
+        width:         '100%',
+        minWidth:      0,
         height:        '100%',
         overflow:      'auto',
         display:       'flex',
