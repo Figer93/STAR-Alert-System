@@ -768,7 +768,7 @@ export default function NetworkPorts() {
 
         {/* Loading skeleton */}
         {loading && (
-          <div className="skeleton card" style={{ height: 140 }} />
+          <div className="skeleton card" style={{ height: 140, width: '100%' }} />
         )}
 
         {/* Switch diagram */}
@@ -782,7 +782,7 @@ export default function NetworkPorts() {
 
         {/* Empty state */}
         {!loading && switchPorts.length === 0 && (
-          <div className="card" style={{ padding: 40, textAlign: 'center' }}>
+          <div className="card" style={{ padding: 40, textAlign: 'center', width: '100%' }}>
             <Plug size={32} color="var(--text-dim)" strokeWidth={1} style={{ marginBottom: 12 }} />
             <p style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 4 }}>No port data available</p>
             <p style={{ color: 'var(--text-dim)', fontSize: 11 }}>
@@ -793,7 +793,7 @@ export default function NetworkPorts() {
 
         {/* Port table */}
         {!loading && filtered.length > 0 && (
-          <div className="card" style={{ overflow: 'auto', flexShrink: 0 }}>
+          <div className="card" style={{ overflow: 'auto', flexShrink: 0, width: '100%' }}>
             <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '8px 12px 0' }}>
               <button
                 onClick={() => {
