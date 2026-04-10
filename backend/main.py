@@ -242,7 +242,7 @@ async def _retention_cleanup():
 
     Retention policy:
       latency_metrics      — keep 2 days
-      switch_port_metrics  — keep 2 days
+      switch_port_metrics  — keep 6 hours
       network_incidents    — keep 30 days (resolved only; open incidents are kept forever)
     """
     from sqlalchemy import text
@@ -258,7 +258,7 @@ async def _retention_cleanup():
                     "DELETE FROM latency_metrics WHERE time < NOW() - INTERVAL '2 days'"
                 ))
                 await db.execute(text(
-                    "DELETE FROM switch_port_metrics WHERE time < NOW() - INTERVAL '2 days'"
+                    "DELETE FROM switch_port_metrics WHERE time < NOW() - INTERVAL '6 hours'"
                 ))
                 await db.execute(text(
                     "DELETE FROM network_incidents "

@@ -73,6 +73,11 @@ async def warm_switch_names_cache() -> None:
 _ports_cache: dict[str, tuple[list, float]] = {}
 _PORTS_CACHE_TTL = 30.0
 
+# /overview and /top-devices; refreshed every 30 s.
+_overview_cache: tuple[Any, float] | None = None
+_top_devices_cache: dict[str, tuple[list, float]] = {}  # keyed by "period:limit"
+_RESPONSE_CACHE_TTL = 30.0
+
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 # period value → (lookback interval, time_bucket bucket size)
@@ -699,6 +704,11 @@ async def get_overview(db: AsyncSession = Depends(get_db)):
     Single-call dashboard summary: WAN health, internal health, collector
     status, open incident count, bytes last hour, and a 0-100 health score.
     """
+    global _overview_cache
+    _now = _time.monotonic()
+    if _overview_cache is not None and _now - _overview_cache[1] < _RESPONSE_CACHE_TTL:
+        return _overview_cache[0]
+
     # ── WAN + gateway latency in one query (single table scan) ───────────────
     lat_rows = await _exec(db, """
         SELECT
@@ -767,7 +777,7 @@ async def get_overview(db: AsyncSession = Depends(get_db)):
     # ── UniFi Cloud status (non-blocking — failure yields connected=False) ────
     unifi_cloud = await _fetch_unifi_cloud()
 
-    return NetworkOverview(
+    result = NetworkOverview(
         wan=WanStatus(
             status=_wan_status(wan_loss, wan_rtt),
             latency_ms=round(wan_rtt, 2) if wan_rtt else None,
@@ -794,6 +804,8 @@ async def get_overview(db: AsyncSession = Depends(get_db)):
         ),
         unifi_cloud=unifi_cloud,
     )
+    _overview_cache = (result, _time.monotonic())
+    return result
 
 
 @router.get("/unifi-cloud-status", response_model=UniFiCloudStatus)
@@ -818,6 +830,13 @@ async def get_top_devices(
     """
     if not _IS_POSTGRES:
         return []
+
+    cache_key = f"{period}:{limit}"
+    _now = _time.monotonic()
+    if cache_key in _top_devices_cache:
+        cached, ts = _top_devices_cache[cache_key]
+        if _now - ts < _RESPONSE_CACHE_TTL:
+            return cached
 
     lookback = _PERIOD_CONFIG[period][0]
     rows = await _exec(db, f"""
@@ -853,7 +872,7 @@ async def get_top_devices(
         LIMIT :limit
     """, {"limit": limit})
 
-    return [
+    result = [
         TopDeviceRow(
             ip=r["ip"],
             hostname=r.get("hostname"),
@@ -864,6 +883,8 @@ async def get_top_devices(
         )
         for r in rows
     ]
+    _top_devices_cache[cache_key] = (result, _time.monotonic())
+    return result
 
 
 @router.get("/latency", response_model=LatencyResponse)
