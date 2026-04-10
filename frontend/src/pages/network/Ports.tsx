@@ -181,7 +181,7 @@ function SwitchDiagram({
       {/* Chassis rows */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {rows.map((row, ri) => (
-          <div key={ri} style={{ display: 'flex', flexWrap: 'nowrap', gap: 2, alignItems: 'center' }}>
+          <div key={ri} style={{ display: 'flex', flexWrap: 'nowrap', gap: 3, alignItems: 'center' }}>
             {row.map(slot => {
               const p      = slotMap.get(slot)
               const status = p?.status ?? 'empty'
@@ -213,8 +213,8 @@ function SwitchDiagram({
                   onMouseMove={e  => p && tip && setTip({ port: p, x: e.clientX, y: e.clientY })}
                   onMouseLeave={() => setTip(null)}
                   style={{
-                    width:        9,
-                    height:       26,
+                    width:        40,
+                    height:       80,
                     borderRadius: 2,
                     background:   status === 'empty' ? '#1c1c1f' : active ? color : `${color}33`,
                     border:       `1px solid ${active ? color : `${color}55`}`,
