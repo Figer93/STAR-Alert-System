@@ -58,6 +58,26 @@ def _ts_ok(raw: Any) -> bool:
     return drift <= _MAX_TIMESTAMP_DRIFT_S
 
 
+def _int(val: Any) -> int | None:
+    """Coerce a possibly-string numeric value to int; None if absent/null."""
+    if val is None or val == "":
+        return None
+    try:
+        return int(float(val))
+    except (TypeError, ValueError):
+        return None
+
+
+def _float(val: Any) -> float | None:
+    """Coerce a possibly-string numeric value to float; None if absent/null."""
+    if val is None or val == "":
+        return None
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return None
+
+
 # ── Request models ────────────────────────────────────────────────────────────
 
 class RowsPayload(BaseModel):
@@ -101,16 +121,16 @@ async def ingest_latency(
                     INSERT INTO latency_metrics
                         (time, target_name, target_ip, target_type, rtt_ms, packet_loss_pct)
                     VALUES
-                        (:time, :target_name, :target_ip, :target_type,
+                        (:time, :target_name, CAST(:target_ip AS INET), :target_type,
                          :rtt_ms, :packet_loss_pct)
                 """),
                 {
-                    "time":            row.get("time"),
+                    "time":            _parse_ts(row.get("time")),
                     "target_name":     row.get("target_name"),
                     "target_ip":       row.get("target_ip"),
                     "target_type":     row.get("target_type", "internal"),
-                    "rtt_ms":          row.get("rtt_ms"),
-                    "packet_loss_pct": row.get("packet_loss_pct", 0.0),
+                    "rtt_ms":          _float(row.get("rtt_ms")),      # None on 100% loss
+                    "packet_loss_pct": _float(row.get("packet_loss_pct")) or 0.0,
                 },
             )
             accepted += 1
@@ -159,11 +179,12 @@ async def ingest_ports(
             rejected += 1
             continue
 
-        rx_errors_delta = int(row.get("rx_errors_delta") or 0)
-        tx_errors_delta = int(row.get("tx_errors_delta") or 0)
+        rx_errors_delta = _int(row.get("rx_errors_delta")) or 0
+        tx_errors_delta = _int(row.get("tx_errors_delta")) or 0
         device_ip       = row.get("device_ip") or None
         switch_id       = row.get("switch_id")
-        port_id         = row.get("port_id")
+        port_id_raw     = row.get("port_id")
+        port_id         = str(port_id_raw) if port_id_raw is not None else None
         device_name     = row.get("device_name")
         occurred_at     = row.get("time")
 
@@ -179,32 +200,32 @@ async def ingest_ports(
                          rx_bytes_delta, tx_bytes_delta, is_counter_reset)
                     VALUES
                         (:time, :switch_id, :switch_name, :port_id, :port_name,
-                         :device_name, :device_ip, :rx_bytes, :tx_bytes,
+                         :device_name, CAST(:device_ip AS INET), :rx_bytes, :tx_bytes,
                          :rx_errors, :tx_errors, :rx_packets, :tx_packets,
                          :poe_watts, :is_uplink,
                          :rx_errors_delta, :tx_errors_delta,
                          :rx_bytes_delta, :tx_bytes_delta, :is_counter_reset)
                 """),
                 {
-                    "time":             occurred_at,
+                    "time":             _parse_ts(occurred_at),
                     "switch_id":        switch_id,
                     "switch_name":      row.get("switch_name"),
                     "port_id":          port_id,
                     "port_name":        row.get("port_name"),
                     "device_name":      device_name,
                     "device_ip":        device_ip,
-                    "rx_bytes":         row.get("rx_bytes"),
-                    "tx_bytes":         row.get("tx_bytes"),
-                    "rx_errors":        row.get("rx_errors"),
-                    "tx_errors":        row.get("tx_errors"),
-                    "rx_packets":       row.get("rx_packets"),
-                    "tx_packets":       row.get("tx_packets"),
-                    "poe_watts":        row.get("poe_watts"),
+                    "rx_bytes":         _int(row.get("rx_bytes")),
+                    "tx_bytes":         _int(row.get("tx_bytes")),
+                    "rx_errors":        _int(row.get("rx_errors")),
+                    "tx_errors":        _int(row.get("tx_errors")),
+                    "rx_packets":       _int(row.get("rx_packets")),
+                    "tx_packets":       _int(row.get("tx_packets")),
+                    "poe_watts":        _float(row.get("poe_watts")),
                     "is_uplink":        row.get("is_uplink", False),
                     "rx_errors_delta":  rx_errors_delta,
                     "tx_errors_delta":  tx_errors_delta,
-                    "rx_bytes_delta":   row.get("rx_bytes_delta", 0),
-                    "tx_bytes_delta":   row.get("tx_bytes_delta", 0),
+                    "rx_bytes_delta":   _int(row.get("rx_bytes_delta")) or 0,
+                    "tx_bytes_delta":   _int(row.get("tx_bytes_delta")) or 0,
                     "is_counter_reset": row.get("is_counter_reset", False),
                 },
             )
@@ -319,7 +340,7 @@ async def ingest_devices(
                         (mac, ip, hostname, device_type, is_online,
                          last_seen, switch_id, port_id)
                     VALUES
-                        (:mac, :ip, :hostname, :device_type, :is_online,
+                        (:mac, CAST(:ip AS INET), :hostname, :device_type, :is_online,
                          :last_seen, :switch_id, :port_id)
                     ON CONFLICT (ip) DO UPDATE SET
                         mac         = EXCLUDED.mac,
@@ -336,9 +357,9 @@ async def ingest_devices(
                     "hostname":    row.get("hostname"),
                     "device_type": row.get("device_type", "unknown"),
                     "is_online":   row.get("is_online", True),
-                    "last_seen":   row.get("last_seen"),
+                    "last_seen":   _parse_ts(row.get("last_seen")),
                     "switch_id":   row.get("switch_id"),
-                    "port_id":     row.get("port_id"),
+                    "port_id":     str(row.get("port_id")) if row.get("port_id") is not None else None,
                 },
             )
             accepted += 1
