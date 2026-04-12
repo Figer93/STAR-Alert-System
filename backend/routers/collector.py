@@ -136,6 +136,7 @@ async def ingest_latency(
             accepted += 1
         except Exception as exc:
             logger.error("Failed to insert latency row: %s — %s", row, exc)
+            await db.rollback()
             rejected += 1
 
     try:
@@ -239,6 +240,7 @@ async def ingest_ports(
                 accepted += 1
             except Exception as exc:
                 logger.error("Failed to insert port row: %s — %s", row, exc)
+                await db.rollback()
                 rejected += 1
                 continue
 
@@ -312,6 +314,7 @@ async def ingest_ports(
                         "Failed to write error event for switch=%s port=%s: %s",
                         switch_id, port_id, exc,
                     )
+                    await db.rollback()
 
         # Commit after each chunk to release the DB connection promptly.
         try:
@@ -375,6 +378,7 @@ async def ingest_devices(
             accepted += 1
         except Exception as exc:
             logger.error("Failed to upsert device row: %s — %s", row, exc)
+            await db.rollback()
 
     try:
         await db.commit()
