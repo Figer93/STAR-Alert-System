@@ -239,19 +239,19 @@ async def ingest_ports(
         if rx_errors_delta > 0 or tx_errors_delta > 0:
             try:
                 # port_error_events: one row per erroring port per cycle
-                ip_sql = "CAST(:device_ip AS INET)" if device_ip else "NULL"
-                await db.execute(text(f"""
+                await db.execute(text("""
                     INSERT INTO port_error_events
                         (switch_id, port_id, device_name, device_ip,
                          rx_errors_delta, tx_errors_delta, occurred_at)
                     VALUES
-                        (:switch_id, :port_id, :device_name, {ip_sql},
+                        (:switch_id, :port_id, :device_name,
+                         CAST(NULLIF(:device_ip, '') AS INET),
                          :rx_errors_delta, :tx_errors_delta, :occurred_at)
                 """), {
                     "switch_id":       switch_id,
                     "port_id":         str(port_id),
                     "device_name":     device_name,
-                    **({"device_ip": device_ip} if device_ip else {}),
+                    "device_ip":       device_ip,
                     "rx_errors_delta": rx_errors_delta,
                     "tx_errors_delta": tx_errors_delta,
                     "occurred_at":     occurred_at,
@@ -265,13 +265,14 @@ async def ingest_ports(
                 if device_name:
                     error_desc = f"{device_name} — " + error_desc
 
-                await db.execute(text(f"""
+                await db.execute(text("""
                     INSERT INTO network_events
                         (event_type, device_ip, description, metadata, occurred_at)
                     VALUES
-                        ('port_error', {ip_sql}, :description, :metadata::jsonb, :occurred_at)
+                        ('port_error', CAST(NULLIF(:device_ip, '') AS INET),
+                         :description, :metadata::jsonb, :occurred_at)
                 """), {
-                    **({"device_ip": device_ip} if device_ip else {}),
+                    "device_ip":   device_ip,
                     "description": error_desc,
                     "metadata": __import__("json").dumps({
                         "switch_id":       switch_id,

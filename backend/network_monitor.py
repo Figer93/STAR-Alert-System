@@ -259,30 +259,26 @@ async def _write_event(
       port_error, device_offline, device_online, latency_spike,
       incident_created, incident_resolved
     """
-    ip_sql     = "CAST(:device_ip AS INET)"  if device_ip  else "NULL"
-    tip_sql    = "CAST(:target_ip AS INET)"  if target_ip  else "NULL"
-    inc_sql    = "CAST(:incident_id AS UUID)" if incident_id else "NULL"
-    meta_sql   = ":metadata::jsonb"          if metadata   else "NULL"
-
-    params: dict = {"event_type": event_type, "description": description}
-    if device_ip:
-        params["device_ip"] = device_ip
-    if target_ip:
-        params["target_ip"] = target_ip
-    if incident_id:
-        params["incident_id"] = incident_id
-    if metadata:
-        params["metadata"] = json.dumps(metadata)
-
     try:
-        await db.execute(text(f"""
+        await db.execute(text("""
             INSERT INTO network_events
                 (event_type, device_ip, target_ip, incident_id,
                  description, metadata)
             VALUES
-                (:event_type, {ip_sql}, {tip_sql}, {inc_sql},
-                 :description, {meta_sql})
-        """), params)
+                (:event_type,
+                 CAST(NULLIF(:device_ip, '') AS INET),
+                 CAST(NULLIF(:target_ip, '') AS INET),
+                 CAST(:incident_id AS UUID),
+                 :description,
+                 CAST(:metadata AS jsonb))
+        """), {
+            "event_type":  event_type,
+            "device_ip":   device_ip,
+            "target_ip":   target_ip,
+            "incident_id": incident_id,
+            "description": description,
+            "metadata":    json.dumps(metadata) if metadata else None,
+        })
         # Caller is responsible for db.commit()
     except Exception as exc:
         logger.error("network_events write failed (event_type=%s): %s", event_type, exc)
