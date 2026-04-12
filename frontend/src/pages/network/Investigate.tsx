@@ -569,9 +569,8 @@ function PortErrorDetail({ metrics }: { metrics: InvestigateMetrics }) {
 
 function GlobalOutageBanner({ incidents }: { incidents: GlobalIncident[] }) {
   if (incidents.length === 0) return null
-  const open   = incidents.filter(i => !i.resolved_at)
-  const closed = incidents.filter(i => !!i.resolved_at)
-  const color  = open.length > 0 ? '#ef4444' : '#eab308'
+  const open  = incidents.filter(i => !i.resolved_at)
+  const color = open.length > 0 ? '#ef4444' : '#eab308'
   const bg     = open.length > 0 ? '#ef444412' : '#eab30812'
 
   return (
