@@ -474,7 +474,7 @@ async def ingest_heartbeat(
             """),
             {
                 "collector_id": payload.collector_id,
-                "last_seen":    payload.last_seen,
+                "last_seen":    _parse_ts(payload.last_seen),
                 "version":      payload.version,
                 "sources":      sources_json,
             },
