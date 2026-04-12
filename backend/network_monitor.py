@@ -285,7 +285,7 @@ async def _write_event(
         """), params)
         # Caller is responsible for db.commit()
     except Exception as exc:
-        logger.debug("network_events write failed (event_type=%s): %s", event_type, exc)
+        logger.error("network_events write failed (event_type=%s): %s", event_type, exc)
 
 
 # ── Incident management ───────────────────────────────────────────────────────
