@@ -175,7 +175,7 @@ def flush_to_backend(backend_url: str) -> None:
         )
 
         try:
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            with urllib.request.urlopen(req, timeout=30) as resp:
                 if resp.status == 200:
                     with _lock:
                         conn = _get_conn()

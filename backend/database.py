@@ -16,13 +16,13 @@ _engine_kwargs: dict = {"echo": settings.DEBUG}
 
 if _is_postgres:
     _engine_kwargs.update(
-        # Conservative pool — Supabase PgBouncer already pools on the server side.
-        # Total max connections = pool_size + max_overflow = 10.
-        pool_size=3,
-        max_overflow=7,
-        # Fail fast: don't let requests queue for 30 s (the default) — surface
-        # pool exhaustion immediately so Railway restarts instead of hanging.
-        pool_timeout=10,
+        # Pool sized to handle concurrent collector ingest + dashboard queries.
+        # Total max connections = pool_size + max_overflow = 15.
+        pool_size=5,
+        max_overflow=10,
+        # Give chunked port inserts enough time to acquire a connection without
+        # surfacing spurious pool-exhaustion errors under burst load.
+        pool_timeout=20,
         # Recycle connections every 30 min so Supabase's idle-connection killer
         # (which fires at 5 min by default on free tier) doesn't hand us a dead
         # socket that then fails at the worst possible moment.
