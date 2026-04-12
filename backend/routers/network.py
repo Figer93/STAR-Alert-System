@@ -288,6 +288,8 @@ class InvestigateResponse(BaseModel):
     timeline: list[TimelineEvent]
     metrics: InvestigateMetrics
     hypothesis: Hypothesis
+    global_incidents: list[dict[str, Any]] = []   # global incidents active during window
+    device_incidents: list[dict[str, Any]] = []   # device-scoped incidents (last 20)
 
 
 class IncidentRow(BaseModel):
@@ -305,6 +307,8 @@ class IncidentRow(BaseModel):
     root_cause: Optional[str]
     resolution_notes: Optional[str]
     auto_detected: bool
+    incident_scope: str = "device"
+    affected_component: Optional[str] = None
 
 
 class DeviceRow(BaseModel):
@@ -730,10 +734,10 @@ async def get_overview(db: AsyncSession = Depends(get_db)):
     # ── Ports with errors in last 5 min — single scan, two conditional counts ──
     port_count_rows = await _exec(db, """
         SELECT
-            COUNT(DISTINCT CASE WHEN (rx_errors BETWEEN 1 AND 100 OR tx_errors BETWEEN 1 AND 100)
-                                 AND NOT (rx_errors > 100 OR tx_errors > 100)
+            COUNT(DISTINCT CASE WHEN (rx_errors_delta BETWEEN 1 AND 100 OR tx_errors_delta BETWEEN 1 AND 100)
+                                 AND NOT (rx_errors_delta > 100 OR tx_errors_delta > 100)
                                 THEN port_id END) AS warning_ports,
-            COUNT(DISTINCT CASE WHEN rx_errors > 100 OR tx_errors > 100
+            COUNT(DISTINCT CASE WHEN rx_errors_delta > 100 OR tx_errors_delta > 100
                                 THEN port_id END) AS error_ports
         FROM switch_port_metrics
         WHERE time > NOW() - INTERVAL '5 minutes'
@@ -845,8 +849,8 @@ async def get_top_devices(
                 device_ip,
                 switch_id,
                 port_id,
-                GREATEST(MAX(rx_bytes) - MIN(rx_bytes), 0) AS delta_rx,
-                GREATEST(MAX(tx_bytes) - MIN(tx_bytes), 0) AS delta_tx
+                COALESCE(SUM(rx_bytes_delta), 0) AS delta_rx,
+                COALESCE(SUM(tx_bytes_delta), 0) AS delta_tx
             FROM switch_port_metrics
             WHERE time > NOW() - INTERVAL '{lookback}'
               AND device_ip IS NOT NULL
@@ -1009,9 +1013,7 @@ async def get_ports(
         WITH ranked AS (
             SELECT *,
                 ROW_NUMBER() OVER (PARTITION BY switch_id, port_id ORDER BY time DESC) AS rn,
-                LAG(rx_bytes) OVER (PARTITION BY switch_id, port_id ORDER BY time) AS prev_rx,
-                LAG(tx_bytes) OVER (PARTITION BY switch_id, port_id ORDER BY time) AS prev_tx,
-                LAG(time)     OVER (PARTITION BY switch_id, port_id ORDER BY time) AS prev_time
+                LAG(time) OVER (PARTITION BY switch_id, port_id ORDER BY time) AS prev_time
             FROM switch_port_metrics
             WHERE time > NOW() - INTERVAL '10 minutes'
               {switch_filter}
@@ -1022,9 +1024,9 @@ async def get_ports(
         errors_1h AS (
             SELECT
                 switch_id, port_id,
-                SUM(rx_errors)                                          AS rx_errors_1h,
-                SUM(tx_errors)                                          AS tx_errors_1h,
-                MAX(CASE WHEN rx_errors > 0 OR tx_errors > 0 THEN time END) AS last_error_time
+                SUM(rx_errors_delta)                                                    AS rx_errors_1h,
+                SUM(tx_errors_delta)                                                    AS tx_errors_1h,
+                MAX(CASE WHEN rx_errors_delta > 0 OR tx_errors_delta > 0 THEN time END) AS last_error_time
             FROM switch_port_metrics
             WHERE time > NOW() - INTERVAL '1 hour'
               {switch_filter}
@@ -1034,16 +1036,16 @@ async def get_ports(
             l.switch_id, l.switch_name, l.port_id, l.port_name,
             l.device_name, l.device_ip::text, l.is_uplink,
             CASE
-                WHEN l.prev_rx IS NOT NULL AND l.rx_bytes >= l.prev_rx
+                WHEN l.prev_time IS NOT NULL
                      AND EXTRACT(EPOCH FROM (l.time - l.prev_time)) > 0
-                THEN (l.rx_bytes - l.prev_rx)::float
+                THEN l.rx_bytes_delta::float
                      / EXTRACT(EPOCH FROM (l.time - l.prev_time))
                 ELSE 0
             END AS rx_bytes_rate,
             CASE
-                WHEN l.prev_tx IS NOT NULL AND l.tx_bytes >= l.prev_tx
+                WHEN l.prev_time IS NOT NULL
                      AND EXTRACT(EPOCH FROM (l.time - l.prev_time)) > 0
-                THEN (l.tx_bytes - l.prev_tx)::float
+                THEN l.tx_bytes_delta::float
                      / EXTRACT(EPOCH FROM (l.time - l.prev_time))
                 ELSE 0
             END AS tx_bytes_rate,
@@ -1059,8 +1061,8 @@ async def get_ports(
     err_rows = await _exec(db, f"""
         SELECT switch_id, port_id::text AS port_id,
                date_trunc('hour', time) AS bucket,
-               SUM(rx_errors)           AS rx_errors,
-               SUM(tx_errors)           AS tx_errors
+               SUM(rx_errors_delta)     AS rx_errors,
+               SUM(tx_errors_delta)     AS tx_errors
         FROM switch_port_metrics
         WHERE time > NOW() - INTERVAL '24 hours'
           {switch_filter}
@@ -1083,17 +1085,16 @@ async def get_ports(
     tput_rows = await _exec(db, f"""
         SELECT switch_id, port_id::text AS port_id, time,
                CASE
-                   WHEN prev_rx IS NOT NULL AND rx_bytes >= prev_rx AND elapsed > 0
-                   THEN (rx_bytes - prev_rx)::float / elapsed
+                   WHEN elapsed > 0
+                   THEN rx_bytes_delta::float / elapsed
                END AS rx_bytes_rate,
                CASE
-                   WHEN prev_tx IS NOT NULL AND tx_bytes >= prev_tx AND elapsed > 0
-                   THEN (tx_bytes - prev_tx)::float / elapsed
+                   WHEN elapsed > 0
+                   THEN tx_bytes_delta::float / elapsed
                END AS tx_bytes_rate
         FROM (
-            SELECT switch_id, port_id, time, rx_bytes, tx_bytes,
-                   LAG(rx_bytes) OVER (PARTITION BY switch_id, port_id ORDER BY time) AS prev_rx,
-                   LAG(tx_bytes) OVER (PARTITION BY switch_id, port_id ORDER BY time) AS prev_tx,
+            SELECT switch_id, port_id, time,
+                   rx_bytes_delta, tx_bytes_delta,
                    EXTRACT(EPOCH FROM (
                        time - LAG(time) OVER (PARTITION BY switch_id, port_id ORDER BY time)
                    )) AS elapsed
@@ -1101,7 +1102,7 @@ async def get_ports(
             WHERE time > NOW() - INTERVAL '1 hour'
               {switch_filter}
         ) sub
-        WHERE prev_rx IS NOT NULL
+        WHERE elapsed IS NOT NULL
         ORDER BY switch_id, port_id, time
     """, params)
 
@@ -1351,8 +1352,8 @@ async def get_device(ip: str, db: AsyncSession = Depends(get_db)):
     # Port errors last 24h — try time_bucket first, fall back to date_trunc
     port_errors_24h = await _exec(db, """
         SELECT time_bucket('1 hour', time) AS bucket,
-               SUM(rx_errors) AS rx_errors,
-               SUM(tx_errors) AS tx_errors
+               SUM(rx_errors_delta) AS rx_errors,
+               SUM(tx_errors_delta) AS tx_errors
         FROM switch_port_metrics
         WHERE device_ip::text = :ip
           AND time > NOW() - INTERVAL '24 hours'
@@ -1361,8 +1362,8 @@ async def get_device(ip: str, db: AsyncSession = Depends(get_db)):
     if not port_errors_24h:
         port_errors_24h = await _exec(db, """
             SELECT date_trunc('hour', time) AS bucket,
-                   SUM(rx_errors) AS rx_errors,
-                   SUM(tx_errors) AS tx_errors
+                   SUM(rx_errors_delta) AS rx_errors,
+                   SUM(tx_errors_delta) AS tx_errors
             FROM switch_port_metrics
             WHERE device_ip::text = :ip
               AND time > NOW() - INTERVAL '24 hours'
@@ -1456,6 +1457,8 @@ async def investigate(
                 evidence=["Network tables not available (SQLite dev mode)"],
                 recommended_action="Run against a PostgreSQL/Supabase database.",
             ),
+            global_incidents=[],
+            device_incidents=[],
         )
 
     params = {"ip": ip, "start": start, "end": end}
@@ -1469,12 +1472,12 @@ async def investigate(
 
     # Port error totals + breakdown in window
     port_err_rows = await _exec(db, """
-        SELECT COALESCE(SUM(rx_errors),  0) AS rx_errors,
-               COALESCE(SUM(tx_errors),  0) AS tx_errors,
-               COALESCE(SUM(rx_dropped), 0) AS rx_dropped,
-               COALESCE(SUM(tx_dropped), 0) AS tx_dropped,
-               COALESCE(SUM(rx_frags),   0) AS rx_frags,
-               COALESCE(SUM(rx_bytes),   0) AS rx_bytes
+        SELECT COALESCE(SUM(rx_errors_delta), 0) AS rx_errors,
+               COALESCE(SUM(tx_errors_delta), 0) AS tx_errors,
+               COALESCE(SUM(rx_dropped),      0) AS rx_dropped,
+               COALESCE(SUM(tx_dropped),      0) AS tx_dropped,
+               COALESCE(SUM(rx_frags),        0) AS rx_frags,
+               COALESCE(SUM(rx_bytes_delta),  0) AS rx_bytes
         FROM switch_port_metrics
         WHERE device_ip::text = :ip
           AND time BETWEEN :start AND :end
@@ -1498,7 +1501,7 @@ async def investigate(
         SELECT
             date_trunc('hour', time)
               + (EXTRACT(MINUTE FROM time)::int / 5) * INTERVAL '5 minutes' AS bucket,
-            SUM(rx_errors) AS rx_errors
+            SUM(rx_errors_delta) AS rx_errors
         FROM switch_port_metrics
         WHERE device_ip::text = :ip
           AND time > NOW() - INTERVAL '60 minutes'
@@ -1529,14 +1532,14 @@ async def investigate(
             SELECT
                 port_id,
                 CASE
-                    WHEN SUM(rx_bytes) > 0
-                    THEN (SUM(rx_errors)::float / SUM(rx_bytes)) * 100
+                    WHEN SUM(rx_bytes_delta) > 0
+                    THEN (SUM(rx_errors_delta)::float / SUM(rx_bytes_delta)) * 100
                     ELSE 0
                 END AS port_error_rate
             FROM switch_port_metrics
             WHERE switch_id = :switch_id
               AND time BETWEEN :start AND :end
-              AND (rx_bytes IS NOT NULL OR rx_errors IS NOT NULL)
+              AND (rx_bytes_delta IS NOT NULL OR rx_errors_delta IS NOT NULL)
             GROUP BY port_id
         """, {"switch_id": switch_id_val, "start": start, "end": end})
 
@@ -1567,14 +1570,14 @@ async def investigate(
     raw_metrics_rows = await _exec(db, """
         SELECT
             time,
-            rx_errors,
+            rx_errors_delta  AS rx_errors,
             rx_dropped,
             rx_frags,
-            rx_bytes,
-            tx_bytes,
+            rx_bytes_delta   AS rx_bytes,
+            tx_bytes_delta   AS tx_bytes,
             CASE
-                WHEN rx_bytes > 0
-                THEN ROUND((rx_errors::numeric / rx_bytes * 100)::numeric, 6)
+                WHEN rx_bytes_delta > 0
+                THEN ROUND((rx_errors_delta::numeric / rx_bytes_delta * 100)::numeric, 6)
                 ELSE 0
             END AS error_rate_pct
         FROM switch_port_metrics
@@ -1645,6 +1648,28 @@ async def investigate(
         row.get("dst_port") in _COLLAB_PORTS for row in top_dest
     )
 
+    # ── Global incidents active during window (4B, 4D) ───────────────────────
+    global_inc_rows = await _exec(db, """
+        SELECT id::text AS id, started_at, resolved_at, severity, title,
+               root_cause, affected_component
+        FROM network_incidents
+        WHERE incident_scope = 'global'
+          AND started_at <= :end
+          AND (resolved_at IS NULL OR resolved_at >= :start)
+        ORDER BY started_at DESC
+    """, params)
+
+    # ── Device-scoped incidents, last 20 (4D) ────────────────────────────────
+    device_inc_rows = await _exec(db, """
+        SELECT id::text AS id, started_at, resolved_at, severity, category,
+               title, root_cause, resolution_notes
+        FROM network_incidents
+        WHERE incident_scope = 'device'
+          AND affected_ip::text = :ip
+        ORDER BY started_at DESC
+        LIMIT 20
+    """, {"ip": ip})
+
     # ── Timeline ──────────────────────────────────────────────────────────────
 
     timeline: list[TimelineEvent] = []
@@ -1652,12 +1677,12 @@ async def investigate(
     # Port error events (bucket by 5 min)
     port_events = await _exec(db, """
         SELECT time_bucket('5 minutes', time) AS bucket,
-               SUM(rx_errors) AS rx_errors,
-               SUM(tx_errors) AS tx_errors
+               SUM(rx_errors_delta) AS rx_errors,
+               SUM(tx_errors_delta) AS tx_errors
         FROM switch_port_metrics
         WHERE device_ip::text = :ip
           AND time BETWEEN :start AND :end
-          AND (rx_errors > 0 OR tx_errors > 0)
+          AND (rx_errors_delta > 0 OR tx_errors_delta > 0)
         GROUP BY bucket
         ORDER BY bucket ASC
     """, params)
@@ -1694,40 +1719,70 @@ async def investigate(
             description=f"{e.get('target_type','?')} latency spike: {rtt} ms, {loss}% loss",
         ))
 
-    # Incidents in window
-    inc_events = await _exec(db,
-        "SELECT started_at, severity, title FROM network_incidents "
-        "WHERE (affected_ip::text = :ip OR :ip = ANY(ARRAY[affected_ip::text])) "
-        "AND started_at BETWEEN :start AND :end "
-        "ORDER BY started_at ASC",
-        params)
-    for e in inc_events:
+    # network_events for this device (4E)
+    _EVT_SEV: dict[str, str] = {
+        "port_error":        "warning",
+        "device_offline":    "critical",
+        "device_online":     "ok",
+        "latency_spike":     "warning",
+        "incident_created":  "critical",
+        "incident_resolved": "info",
+    }
+    ne_rows = await _exec(db, """
+        SELECT occurred_at, event_type, description
+        FROM network_events
+        WHERE (device_ip::text = :ip OR target_ip::text = :ip)
+          AND occurred_at BETWEEN :start AND :end
+        ORDER BY occurred_at ASC
+    """, params)
+    seen_ne: set[tuple] = set()
+    for e in ne_rows:
+        evt_type = e.get("event_type", "unknown")
+        key = (str(e["occurred_at"]), evt_type)
+        if key in seen_ne:
+            continue
+        seen_ne.add(key)
         timeline.append(TimelineEvent(
-            time=e["started_at"],
-            event_type="incident",
-            severity=e.get("severity", "info"),
-            description=e.get("title", "Network incident"),
+            time=e["occurred_at"],
+            event_type=evt_type,
+            severity=_EVT_SEV.get(evt_type, "info"),
+            description=e.get("description") or evt_type.replace("_", " ").title(),
         ))
+
+    # Global incident start events that fall within the window
+    for ginc in global_inc_rows:
+        ginc_start = ginc["started_at"]
+        if start <= ginc_start <= end:
+            timeline.append(TimelineEvent(
+                time=ginc_start,
+                event_type="incident",
+                severity=ginc.get("severity", "critical"),
+                description=f"Global outage: {ginc.get('title', 'Network incident')}",
+            ))
+
+    # Device-scoped incident start events within the window
+    for dinc in device_inc_rows:
+        dinc_start = dinc["started_at"]
+        if start <= dinc_start <= end:
+            timeline.append(TimelineEvent(
+                time=dinc_start,
+                event_type="incident",
+                severity=dinc.get("severity", "warning"),
+                description=dinc.get("title", "Device incident"),
+            ))
 
     timeline.sort(key=lambda x: x.time)
 
-    # ── Related incidents for device ──────────────────────────────────────────
-    related_incidents = await _exec(db,
-        "SELECT id::text AS id, started_at, resolved_at, severity, category, title "
-        "FROM network_incidents WHERE affected_ip::text = :ip "
-        "AND started_at BETWEEN :start AND :end "
-        "ORDER BY started_at DESC",
-        params)
+    # ── Serialise ─────────────────────────────────────────────────────────────
 
-    def _fmt(rows: list[dict]) -> list[dict]:
-        out = []
-        for r in rows:
-            d = {k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in r.items()}
-            out.append(d)
-        return out
+    def _fmt_row(r: dict) -> dict:
+        return {k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in r.items()}
 
     if device:
-        device = {k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in device.items()}
+        device = _fmt_row(device)
+
+    global_incidents = [_fmt_row(r) for r in global_inc_rows]
+    device_incidents = [_fmt_row(r) for r in device_inc_rows]
 
     top_dest_fmt = [
         {
@@ -1774,6 +1829,8 @@ async def investigate(
             has_wired_port=has_wired_port,
             has_collab_traffic=has_collab,
         ),
+        global_incidents=global_incidents,
+        device_incidents=device_incidents,
     )
 
 
@@ -1791,7 +1848,8 @@ async def list_incidents(
     rows = await _exec(db,
         f"SELECT id::text AS id, started_at, resolved_at, severity, category, "
         f"affected_ip::text AS affected_ip, affected_switch, affected_port, "
-        f"title, description, evidence, root_cause, resolution_notes, auto_detected "
+        f"title, description, evidence, root_cause, resolution_notes, auto_detected, "
+        f"COALESCE(incident_scope, 'device') AS incident_scope, affected_component "
         f"FROM network_incidents {where} "
         f"ORDER BY started_at DESC LIMIT :limit",
         {"limit": limit})
@@ -1812,6 +1870,8 @@ async def list_incidents(
             root_cause=r.get("root_cause"),
             resolution_notes=r.get("resolution_notes"),
             auto_detected=bool(r.get("auto_detected")),
+            incident_scope=r.get("incident_scope") or "device",
+            affected_component=r.get("affected_component"),
         )
         for r in rows
     ]
@@ -1849,7 +1909,8 @@ async def resolve_incident(
     rows = await _exec(db,
         "SELECT id::text AS id, started_at, resolved_at, severity, category, "
         "affected_ip::text AS affected_ip, affected_switch, affected_port, "
-        "title, description, evidence, root_cause, resolution_notes, auto_detected "
+        "title, description, evidence, root_cause, resolution_notes, auto_detected, "
+        "COALESCE(incident_scope, 'device') AS incident_scope, affected_component "
         "FROM network_incidents WHERE id::text = :id",
         {"id": incident_id})
 
@@ -1869,6 +1930,8 @@ async def resolve_incident(
         root_cause=r.get("root_cause"),
         resolution_notes=r.get("resolution_notes"),
         auto_detected=bool(r.get("auto_detected")),
+        incident_scope=r.get("incident_scope") or "device",
+        affected_component=r.get("affected_component"),
     )
 
 

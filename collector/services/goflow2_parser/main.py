@@ -1,6 +1,6 @@
 """
-goflow2_parser — tails flows.jsonl written by goflow2 and inserts into
-the Supabase network_flows table.
+goflow2_parser — tails flows.jsonl written by goflow2 and buffers flow rows
+for the Railway backend (/api/collector/metrics/flows).
 
 goflow2 JSON field mapping:
   src_addr            → src_ip
@@ -21,14 +21,18 @@ is ambiguous relative to our network):
   both in LOCAL_SUBNET            → internal
 """
 
+import sys
+sys.path.insert(0, '/app')
+
 import ipaddress
 import json
 import logging
 import os
+import threading
 import time
 from datetime import datetime, timezone
 
-from supabase import create_client, Client
+from buffer import write_local, flush_to_backend
 
 logging.basicConfig(
     level=logging.INFO,
@@ -38,8 +42,7 @@ log = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-SUPABASE_URL   = os.environ["SUPABASE_URL"]
-SUPABASE_KEY   = os.environ["SUPABASE_KEY"]
+BACKEND_URL    = os.environ["BACKEND_URL"]
 FLOWS_FILE     = os.environ.get("FLOWS_FILE", "/data/flows.jsonl")
 BATCH_SIZE     = int(os.environ.get("BATCH_SIZE", "100"))
 BATCH_INTERVAL = float(os.environ.get("BATCH_INTERVAL", "2.0"))
@@ -106,26 +109,34 @@ def _parse_line(line: str) -> dict | None:
     }
 
 
-def _flush(client: Client, batch: list[dict]) -> None:
-    """Insert a batch of rows into network_flows, discarding rows on error."""
+def _flush_batch(batch: list[dict]) -> None:
+    """Buffer a batch of flow rows for the backend."""
     if not batch:
         return
-    try:
-        client.table("network_flows").insert(batch).execute()
-        log.info("Inserted %d flow rows", len(batch))
-    except Exception as exc:
-        log.error("Failed to insert batch of %d rows: %s", len(batch), exc)
+    for row in batch:
+        write_local("/api/collector/metrics/flows", row)
+    log.info("Buffered %d flow rows", len(batch))
+
+
+def _flush_loop() -> None:
+    """Background thread: flush buffer to backend every 60 seconds."""
+    while True:
+        time.sleep(60)
+        try:
+            flush_to_backend(BACKEND_URL)
+        except Exception as exc:
+            log.error("Flush error: %s", exc)
 
 
 def _wait_for_file(path: str) -> None:
     """Block until the flows file exists (goflow2 may take a moment to start)."""
     while not os.path.exists(path):
-        log.info("Waiting for %s …", path)
+        log.info("Waiting for %s ...", path)
         time.sleep(5)
 
 
-def tail(path: str, client: Client) -> None:
-    """Continuously tail the file, batching rows and flushing to Supabase."""
+def tail(path: str) -> None:
+    """Continuously tail the file, batching rows and buffering for the backend."""
     _wait_for_file(path)
     batch: list[dict] = []
     last_flush = time.monotonic()
@@ -147,7 +158,7 @@ def tail(path: str, client: Client) -> None:
 
             now = time.monotonic()
             if len(batch) >= BATCH_SIZE or (batch and now - last_flush >= BATCH_INTERVAL):
-                _flush(client, batch)
+                _flush_batch(batch)
                 batch = []
                 last_flush = now
 
@@ -155,13 +166,17 @@ def tail(path: str, client: Client) -> None:
 def main() -> None:
     log.info("goflow2_parser starting — file=%s batch=%d interval=%.1fs",
              FLOWS_FILE, BATCH_SIZE, BATCH_INTERVAL)
-    client: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+    # Start background flush thread
+    flush_thread = threading.Thread(target=_flush_loop, daemon=True)
+    flush_thread.start()
+    log.info("Buffer flush thread started (60s interval) → %s", BACKEND_URL)
 
     while True:
         try:
-            tail(FLOWS_FILE, client)
+            tail(FLOWS_FILE)
         except FileNotFoundError:
-            log.warning("%s disappeared, waiting for it to reappear …", FLOWS_FILE)
+            log.warning("%s disappeared, waiting for it to reappear ...", FLOWS_FILE)
             time.sleep(10)
         except Exception as exc:
             log.error("Unexpected error in tail loop: %s — restarting in 5 s", exc)

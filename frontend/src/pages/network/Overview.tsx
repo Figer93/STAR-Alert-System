@@ -448,18 +448,20 @@ export default function NetworkOverview() {
         }
 
         // Collector offline and no cloud fallback
+        const isVeryStale = collectorOfflineMin != null && collectorOfflineMin > 15
         return (
           <motion.div
             initial={{ opacity: 0, y: -8 }}
             animate={{ opacity: 1, y: 0 }}
             style={{
               padding: '10px 14px', borderRadius: 'var(--radius)',
-              background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)',
+              background: isVeryStale ? 'rgba(239,68,68,0.10)' : 'rgba(245,158,11,0.08)',
+              border: `1px solid ${isVeryStale ? 'rgba(239,68,68,0.30)' : 'rgba(245,158,11,0.3)'}`,
               display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0,
             }}
           >
-            <AlertTriangle size={14} color="var(--amber)" />
-            <span style={{ fontSize: 12, color: 'var(--amber)', fontWeight: 500 }}>
+            <AlertTriangle size={14} color={isVeryStale ? 'var(--red)' : 'var(--amber)'} />
+            <span style={{ fontSize: 12, color: isVeryStale ? 'var(--red)' : 'var(--amber)', fontWeight: 500 }}>
               Collector offline — last data received{' '}
               {collectorOfflineMin != null ? `${collectorOfflineMin} minute${collectorOfflineMin !== 1 ? 's' : ''} ago` : 'unknown'}.
               {' '}Network data may be stale. Start the collector to resume monitoring.

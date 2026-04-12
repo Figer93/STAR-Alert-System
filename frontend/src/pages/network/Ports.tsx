@@ -675,7 +675,7 @@ export default function NetworkPorts() {
     ['ip',         'IP'],
     ['rx',         'RX/s'],
     ['tx',         'TX/s'],
-    ['errors',     'Errors (1h)'],
+    ['errors',     'Errors/hr'],
     ['status',     'Status'],
     ['last_error', 'Last Error'],
   ]
@@ -865,10 +865,25 @@ export default function NetworkPorts() {
                         </span>
                       </td>
                       <td>
-                        {errors > 0
-                          ? <span style={{ color: '#ef4444', fontWeight: 700, fontFamily: 'JetBrains Mono, monospace' }}>{errors}</span>
-                          : <span style={{ color: 'var(--text-dim)' }}>0</span>
-                        }
+                        {errors > 0 ? (
+                          <span
+                            title={`${errors} error${errors !== 1 ? 's' : ''} in last hour${p.last_error_time ? ` · Last error: ${new Date(p.last_error_time).toLocaleString()}` : ''}`}
+                            style={{
+                              display:    'inline-flex',
+                              alignItems: 'baseline',
+                              gap:        2,
+                              color:      errors > 10 ? 'var(--red)' : 'var(--amber)',
+                              fontWeight: 700,
+                              fontFamily: 'JetBrains Mono, monospace',
+                              cursor:     'default',
+                            }}
+                          >
+                            {errors}
+                            <span style={{ fontSize: 9, fontWeight: 400, opacity: 0.75 }}>/hr</span>
+                          </span>
+                        ) : (
+                          <span style={{ color: 'var(--text-dim)', fontFamily: 'JetBrains Mono, monospace' }}>0</span>
+                        )}
                       </td>
                       <td>
                         <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: STATUS_COLORS[p.status] }}>

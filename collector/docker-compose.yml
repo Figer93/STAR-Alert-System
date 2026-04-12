@@ -9,7 +9,7 @@ services:
 
   # ── goflow2: receives NetFlow v5/v9/IPFIX from pfSense ─────────────────────
   # Listens on UDP ${NETFLOW_PORT} and writes JSON lines to a shared volume.
-  # The goflow2_parser sidecar tails that file and inserts into Supabase.
+  # The goflow2_parser sidecar tails that file and inserts into the buffer.
   #
   # NOTE: direct PostgreSQL output is not available in all goflow2 builds.
   # We therefore use the -transport=file approach and a Python sidecar.
@@ -31,20 +31,24 @@ services:
     networks:
       - collector_net
 
-  # ── goflow2_parser: tails goflow2 JSON → Supabase network_flows ────────────
+  # ── goflow2_parser: tails goflow2 JSON → buffer → Railway backend ──────────
   goflow2_parser:
     build: ./services/goflow2_parser
     restart: unless-stopped
     depends_on:
       - goflow2
     environment:
-      SUPABASE_URL: ${SUPABASE_URL}
-      SUPABASE_KEY: ${SUPABASE_KEY}
+      BACKEND_URL: ${BACKEND_URL}
       FLOWS_FILE: /data/flows.jsonl
       BATCH_SIZE: "100"
       BATCH_INTERVAL: "2.0"
+      # Buffer DB lives in /buffer so it doesn't conflict with the goflow_data
+      # volume that is already mounted at /data for flows.jsonl.
+      BUFFER_DB_PATH: /buffer/buffer.db
     volumes:
       - goflow_data:/data
+      - buffer_data:/buffer
+      - ./buffer.py:/app/buffer.py:ro
     networks:
       - collector_net
 
@@ -64,13 +68,12 @@ services:
     networks:
       - collector_net
 
-  # ── unifi_poller: polls UniFi Controller → switch_port_metrics + device_registry
+  # ── unifi_poller: polls UniFi Controller → buffer → Railway backend ────────
   unifi_poller:
     build: ./services/unifi_poller
     restart: unless-stopped
     environment:
-      SUPABASE_URL: ${SUPABASE_URL}
-      SUPABASE_KEY: ${SUPABASE_KEY}
+      BACKEND_URL: ${BACKEND_URL}
       UNIFI_URL: ${UNIFI_URL}
       UNIFI_PORT: ${UNIFI_PORT:-8443}
       UNIFI_USER: ${UNIFI_USER}
@@ -78,10 +81,14 @@ services:
       UNIFI_SITE: ${UNIFI_SITE:-default}
       UNIFI_VERIFY_SSL: ${UNIFI_VERIFY_SSL:-false}
       POLL_INTERVAL: "60"
+    volumes:
+      - buffer_data:/data
+      - ./buffer.py:/app/buffer.py:ro
     networks:
       - collector_net
 
-  # ── fping_collector: measures latency for all known IPs every 10 s ─────────
+  # ── fping_collector: LAN latency monitoring only ───────────────────────────
+  # Pings LAN targets only (WAN monitoring is handled by Railway backend).
   # Requires NET_RAW capability to send ICMP packets.
   fping_collector:
     build: ./services/fping_collector
@@ -89,32 +96,34 @@ services:
     cap_add:
       - NET_RAW
     environment:
-      SUPABASE_URL: ${SUPABASE_URL}
-      SUPABASE_KEY: ${SUPABASE_KEY}
-      GATEWAY_IP: ${GATEWAY_IP}
-      WAN1_GATEWAY_IP: ${WAN1_GATEWAY_IP:-}
-      WAN2_GATEWAY_IP: ${WAN2_GATEWAY_IP:-}
-      ISP_GATEWAY_IP: ${ISP_GATEWAY_IP:-}
-      INTERNAL_IPS: ${INTERNAL_IPS:-}
-      WAN_MONITOR_IPS: ${WAN_MONITOR_IPS:-8.8.8.8,1.1.1.1}
+      BACKEND_URL: ${BACKEND_URL}
+      INTERNAL_IPS: ${INTERNAL_IPS:-10.2.1.253,10.2.1.5,10.2.1.3,10.2.2.100}
       FPING_INTERVAL: "30"
+    volumes:
+      - buffer_data:/data
+      - ./buffer.py:/app/buffer.py:ro
     networks:
       - collector_net
 
   # ── health_reporter: heartbeat + silent-source detection ───────────────────
+  # Writes heartbeat to Supabase directly (fallback) AND to Railway backend.
   health_reporter:
     build: ./services/health_reporter
     restart: unless-stopped
     environment:
       SUPABASE_URL: ${SUPABASE_URL}
       SUPABASE_KEY: ${SUPABASE_KEY}
+      BACKEND_URL: ${BACKEND_URL}
       COLLECTOR_ID: ${COLLECTOR_ID:-office-main}
       REPORT_INTERVAL: "60"
+    volumes:
+      - ./buffer.py:/app/buffer.py:ro
     networks:
       - collector_net
 
 volumes:
-  goflow_data:   # shared between goflow2 and goflow2_parser
+  goflow_data:    # shared between goflow2 and goflow2_parser
+  buffer_data:    # persistent SQLite buffer for all collector services
 
 networks:
   collector_net:

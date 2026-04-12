@@ -41,7 +41,10 @@ _IS_POSTGRES = "postgresql" in settings.DATABASE_URL
 _RESOLVE_WINDOW_MINUTES = 30          # don't re-open an incident resolved < 30 min ago
 _COLLECTOR_STALE_MINUTES = 5
 _DEVICE_STALE_MINUTES = 5
-_WAN_LOSS_THRESHOLD = 5.0             # %
+_WAN_LOSS_THRESHOLD = 5.0             # % — legacy single-reading threshold (kept for reference)
+_WAN_LOSS_PCT_THRESHOLD = 50.0        # % — per-target threshold for consecutive-cycle check
+_WAN_LOSS_CONSECUTIVE_THRESHOLD = 3   # consecutive 60-s cycles before a WAN incident opens
+_GLOBAL_RECOVER_THRESHOLD = 3         # consecutive recovery cycles before a global incident closes
 _LATENCY_THRESHOLD_MS = 50.0          # ms
 _PORT_ERROR_THRESHOLD = 50            # RX errors per 5-min window (raw fallback)
 _PORT_ERROR_RATE_LOW  = 0.001         # % — below this is background noise
@@ -73,6 +76,19 @@ _LATENCY_TARGET_ROLES: dict[str, str] = {
 _INTERNAL_IPS = frozenset({_IP_LAN_GW, _IP_DC_PRIMARY, _IP_DC_SECONDARY, _IP_VLAN2_DC})
 _EXTERNAL_DNS  = frozenset({_IP_DNS_CF, _IP_DNS_GOOGLE})
 
+# Root causes that represent a network-wide outage (incident_scope='global').
+# Device-specific root causes (PFSENSE, DC_PRIMARY, DC_SECONDARY, VLAN2_DC, UNKNOWN)
+# are incident_scope='device' and are scoped to a single IP.
+_GLOBAL_ROOT_CAUSES = frozenset({"WAN_ISP", "WAN_LINE", "WAN1_DOWN", "WAN2_DOWN", "FULL_OUTAGE", "ALL_INTERNAL"})
+
+# Map device-scoped root causes to their primary IP for affected_ip on the incident.
+_ROOT_CAUSE_IP: dict[str, str] = {
+    "PFSENSE":      _IP_LAN_GW,
+    "DC_PRIMARY":   _IP_DC_PRIMARY,
+    "DC_SECONDARY": _IP_DC_SECONDARY,
+    "VLAN2_DC":     _IP_VLAN2_DC,
+}
+
 _LATENCY_CONSECUTIVE_THRESHOLD = 3    # alert after N consecutive readings above threshold
 _LATENCY_COOLDOWN_MINUTES       = 10  # suppress re-alert for N min after a target recovers
 
@@ -97,6 +113,11 @@ _collector_online_state: Optional[bool] = None
 _latency_consecutive:         dict[str, int]      = {}  # ip → consecutive above-threshold readings
 _latency_recover_consecutive: dict[str, int]      = {}  # ip → consecutive below-threshold readings
 _latency_cooldown:            dict[str, datetime] = {}  # ip → cooldown-expiry timestamp
+_global_latency_recover_consecutive: int          = 0   # consecutive cycles where alerting is empty (global incident auto-resolve)
+
+# Per-target WAN packet-loss tracking (consecutive-cycle pattern mirrors latency)
+_wan_loss_consecutive: dict[str, int] = {}  # ip → consecutive cycles >50% loss
+_wan_loss_recover:     dict[str, int] = {}  # ip → consecutive cycles ≤50% loss
 
 # ── Telegram rate limiting ────────────────────────────────────────────────────
 # Per-device cooldown: at most 1 new-incident alert per (category, entity) per hour.
@@ -216,6 +237,57 @@ async def _exec_one(
     return rows[0] if rows else None
 
 
+# ── Network event helper ──────────────────────────────────────────────────────
+
+async def _write_event(
+    db: AsyncSession,
+    event_type: str,
+    *,
+    device_ip: Optional[str] = None,
+    target_ip: Optional[str] = None,
+    incident_id: Optional[str] = None,
+    description: str = "",
+    metadata: dict | None = None,
+) -> None:
+    """
+    Insert a row into network_events (timeline).
+
+    Best-effort: errors are logged but never re-raised so callers are not
+    interrupted by a failed event write.
+
+    event_type values (canonical):
+      port_error, device_offline, device_online, latency_spike,
+      incident_created, incident_resolved
+    """
+    ip_sql     = "CAST(:device_ip AS INET)"  if device_ip  else "NULL"
+    tip_sql    = "CAST(:target_ip AS INET)"  if target_ip  else "NULL"
+    inc_sql    = "CAST(:incident_id AS UUID)" if incident_id else "NULL"
+    meta_sql   = ":metadata::jsonb"          if metadata   else "NULL"
+
+    params: dict = {"event_type": event_type, "description": description}
+    if device_ip:
+        params["device_ip"] = device_ip
+    if target_ip:
+        params["target_ip"] = target_ip
+    if incident_id:
+        params["incident_id"] = incident_id
+    if metadata:
+        params["metadata"] = json.dumps(metadata)
+
+    try:
+        await db.execute(text(f"""
+            INSERT INTO network_events
+                (event_type, device_ip, target_ip, incident_id,
+                 description, metadata)
+            VALUES
+                (:event_type, {ip_sql}, {tip_sql}, {inc_sql},
+                 :description, {meta_sql})
+        """), params)
+        # Caller is responsible for db.commit()
+    except Exception as exc:
+        logger.debug("network_events write failed (event_type=%s): %s", event_type, exc)
+
+
 # ── Incident management ───────────────────────────────────────────────────────
 
 async def _get_open_incident(
@@ -253,7 +325,7 @@ async def _get_open_incident(
 
     where = " AND ".join(conditions)
     return await _exec_one(db,
-        f"SELECT id::text AS id, title, severity, started_at "
+        f"SELECT id::text AS id, title, severity, started_at, incident_scope "
         f"FROM network_incidents WHERE {where} "
         f"ORDER BY started_at DESC LIMIT 1",
         params)
@@ -308,52 +380,93 @@ async def _create_incident(
     affected_port: Optional[str] = None,
     evidence: Optional[dict] = None,
     root_cause: Optional[str] = None,
+    incident_scope: str = "device",
+    affected_component: Optional[str] = None,
 ) -> Optional[str]:
     """
     Insert a new network_incident row and commit.
     Returns the generated UUID as a string, or None on error.
 
+    incident_scope:    'global' for WAN/ISP/FULL_OUTAGE; 'device' for single-device incidents.
+    affected_component: Human-readable component (e.g. 'WAN1', 'DC_PRIMARY') stored for UI display.
     NULL/INET casting is handled by conditional SQL fragments so that
     asyncpg never receives a typed None where a cast is specified.
     """
     ip_sql = "CAST(:affected_ip AS INET)" if affected_ip else "NULL"
     ev_sql = "CAST(:evidence AS JSONB)"   if evidence   else "NULL"
+    ac_sql = ":affected_component"        if affected_component else "NULL"
 
     params: dict[str, Any] = {
-        "severity":        severity,
-        "category":        category,
-        "title":           title,
-        "description":     description,
-        "affected_switch": affected_switch,
-        "affected_port":   affected_port,
-        "root_cause":      root_cause,
+        "severity":          severity,
+        "category":          category,
+        "title":             title,
+        "description":       description,
+        "affected_switch":   affected_switch,
+        "affected_port":     affected_port,
+        "root_cause":        root_cause,
+        "incident_scope":    incident_scope,
     }
     if affected_ip:
         params["affected_ip"] = affected_ip
     if evidence:
         params["evidence"] = json.dumps(evidence)
+    if affected_component:
+        params["affected_component"] = affected_component
 
     rows = await _exec(db, f"""
         INSERT INTO network_incidents (
             severity, category, title, description,
             affected_ip, affected_switch, affected_port,
-            evidence, root_cause, auto_detected
+            evidence, root_cause, auto_detected,
+            incident_scope, affected_component
         ) VALUES (
             :severity, :category, :title, :description,
             {ip_sql}, :affected_switch, :affected_port,
-            {ev_sql}, :root_cause, true
+            {ev_sql}, :root_cause, true,
+            :incident_scope, {ac_sql}
         )
         RETURNING id::text AS id
     """, params)
+
+    incident_id = rows[0]["id"] if rows else None
+    if incident_id:
+        await _write_event(
+            db,
+            "incident_created",
+            device_ip=affected_ip,
+            incident_id=incident_id,
+            description=title,
+            metadata={
+                "severity":    severity,
+                "category":    category,
+                "root_cause":  root_cause,
+                "scope":       incident_scope,
+            },
+        )
+
     await db.commit()
-    return rows[0]["id"] if rows else None
+    return incident_id
 
 
 async def _resolve_incident(db: AsyncSession, incident_id: str) -> None:
     """Set resolved_at = NOW() on a single incident and commit."""
+    # Fetch title/category before updating so we can write a descriptive event
+    inc = await _exec_one(db,
+        "SELECT title, category, affected_ip::text AS affected_ip "
+        "FROM network_incidents WHERE id = :id::uuid",
+        {"id": incident_id})
     await _exec(db,
         "UPDATE network_incidents SET resolved_at = NOW() WHERE id = :id::uuid",
         {"id": incident_id})
+    if inc:
+        await _write_event(
+            db,
+            "incident_resolved",
+            device_ip=inc.get("affected_ip"),
+            incident_id=incident_id,
+            description=f"Resolved: {inc.get('title', '')}",
+            metadata={"category": inc.get("category")},
+        )
     await db.commit()
 
 
@@ -369,11 +482,30 @@ async def _resolve_incidents_batch(db: AsyncSession, incident_ids: list[str]) ->
         return
     from sqlalchemy import bindparam
     from sqlalchemy.dialects.postgresql import ARRAY, UUID as PGUUID
+
+    # Fetch incident details before resolving so we can write events
+    inc_rows = await _exec(db,
+        "SELECT id::text AS id, title, category, "
+        "affected_ip::text AS affected_ip "
+        "FROM network_incidents WHERE id = ANY(:ids::uuid[])",
+        {"ids": incident_ids})
+    inc_by_id = {r["id"]: r for r in inc_rows}
+
     try:
         stmt = text(
             "UPDATE network_incidents SET resolved_at = NOW() WHERE id = ANY(:ids)"
         ).bindparams(bindparam("ids", type_=ARRAY(PGUUID(as_uuid=False))))
         await db.execute(stmt, {"ids": incident_ids})
+        for incident_id in incident_ids:
+            inc = inc_by_id.get(incident_id, {})
+            await _write_event(
+                db,
+                "incident_resolved",
+                device_ip=inc.get("affected_ip"),
+                incident_id=incident_id,
+                description=f"Resolved: {inc.get('title', '')}",
+                metadata={"category": inc.get("category")},
+            )
         await db.commit()
     except Exception:
         logger.exception("Batch incident resolve failed — falling back to individual resolves")
@@ -382,50 +514,176 @@ async def _resolve_incidents_batch(db: AsyncSession, incident_ids: list[str]) ->
             await _resolve_incident(db, incident_id)
 
 
+async def _get_open_global_incident(
+    db: AsyncSession, root_cause: str
+) -> dict | None:
+    """
+    Return the most recent open global incident with the given root_cause.
+    Used to deduplicate global incidents — ONE open incident per root_cause.
+    """
+    return await _exec_one(db, """
+        SELECT id::text AS id, title, severity, started_at, evidence
+        FROM network_incidents
+        WHERE resolved_at IS NULL
+          AND incident_scope = 'global'
+          AND root_cause = :root_cause
+        ORDER BY started_at DESC LIMIT 1
+    """, {"root_cause": root_cause})
+
+
+async def _update_global_incident_targets(
+    db: AsyncSession, incident_id: str, affected_ips: list[str]
+) -> None:
+    """Update the evidence.affected_ips list on an existing global incident."""
+    await _exec(db, """
+        UPDATE network_incidents
+        SET evidence = jsonb_set(
+            COALESCE(evidence, '{}'::jsonb),
+            '{affected_ips}',
+            :targets::jsonb
+        )
+        WHERE id = :id::uuid
+    """, {"id": incident_id, "targets": json.dumps(sorted(affected_ips))})
+    await db.commit()
+
+
 # ── Individual checks ─────────────────────────────────────────────────────────
 
 async def _check_wan_loss(db: AsyncSession) -> None:
-    """Check 1: WAN packet loss > 5% averaged over the last 3 minutes."""
-    row = await _exec_one(db, """
-        SELECT AVG(packet_loss_pct) AS avg_loss
+    """
+    Check 1: Per-target WAN packet loss with consecutive-cycle guard.
+
+    An incident opens only after _WAN_LOSS_CONSECUTIVE_THRESHOLD (3) consecutive
+    60-second cycles where a target's packet_loss_pct exceeds _WAN_LOSS_PCT_THRESHOLD
+    (50%).  A single stray packet loss is logged but creates no incident.
+
+    Auto-resolve requires _GLOBAL_RECOVER_THRESHOLD (3) consecutive clean cycles
+    across all affected targets.
+
+    The incident is scoped 'global' with a root_cause classified from the set of
+    currently-down external targets (same logic as _check_internal_latency).
+    """
+    global _wan_loss_consecutive, _wan_loss_recover
+
+    wan1 = settings.WAN1_GATEWAY_IP.strip()
+    wan2 = settings.WAN2_GATEWAY_IP.strip()
+    wan_legacy = settings.WAN_GATEWAY_IP.strip()
+
+    # External targets the Railway backend is responsible for monitoring.
+    external_ips = list(dict.fromkeys(filter(None, [
+        wan1, wan2,
+        wan_legacy if wan_legacy and not wan1 and not wan2 else None,
+        _IP_DNS_CF, _IP_DNS_GOOGLE,
+    ])))
+    if not external_ips:
+        return
+
+    # Query per-target avg packet loss for the most recent 2-minute window.
+    rows = await _exec(db, """
+        SELECT target_ip::text AS ip, AVG(packet_loss_pct) AS avg_loss
         FROM latency_metrics
-        WHERE target_type = 'wan'
-          AND time > NOW() - INTERVAL '3 minutes'
-    """)
-    if not row or row["avg_loss"] is None:
-        return  # No collector data yet
+        WHERE time > NOW() - INTERVAL '2 minutes'
+          AND packet_loss_pct IS NOT NULL
+        GROUP BY target_ip
+        HAVING target_ip::text = ANY(:ips)
+    """, {"ips": external_ips})
 
-    avg_loss = float(row["avg_loss"])
-    open_inc = await _get_open_incident(db, "wan_issue")
+    loss_by_ip: dict[str, float] = {
+        r["ip"]: float(r["avg_loss"])
+        for r in rows
+        if r["ip"] is not None and r["avg_loss"] is not None
+    }
 
-    if avg_loss > _WAN_LOSS_THRESHOLD:
+    if not loss_by_ip:
+        return  # No WAN latency data yet — collector not pinging external targets
+
+    # Update consecutive counts; build the set of confirmed-down IPs.
+    confirmed_down: set[str] = set()
+    for ip in external_ips:
+        loss = loss_by_ip.get(ip)
+        if loss is not None and loss > _WAN_LOSS_PCT_THRESHOLD:
+            _wan_loss_consecutive[ip] = _wan_loss_consecutive.get(ip, 0) + 1
+            _wan_loss_recover[ip] = 0
+            cycle = _wan_loss_consecutive[ip]
+            if cycle >= _WAN_LOSS_CONSECUTIVE_THRESHOLD:
+                confirmed_down.add(ip)
+            else:
+                logger.debug(
+                    "WAN packet loss on %s: %.1f%% (cycle %d/%d — not yet incident)",
+                    ip, loss, cycle, _WAN_LOSS_CONSECUTIVE_THRESHOLD,
+                )
+        else:
+            _wan_loss_consecutive[ip] = 0
+            _wan_loss_recover[ip] = _wan_loss_recover.get(ip, 0) + 1
+
+    if confirmed_down:
+        root_cause = _classify_root_cause(confirmed_down)
+        rc_label   = _ROOT_CAUSE_LABELS.get(root_cause, root_cause)
+
+        # Dedup: one open global incident per root_cause.
+        open_inc = await _get_open_global_incident(db, root_cause)
         if open_inc:
-            return  # Already tracking
-        if await _recently_resolved(db, "wan_issue"):
-            return  # Avoid re-opening too soon
+            # Update evidence with the current affected IPs list.
+            await _update_global_incident_targets(
+                db, open_inc["id"], list(confirmed_down)
+            )
+            return
 
+        # Also check for any open wan_issue global incident (root_cause may have changed).
+        any_open = await _exec_one(db, """
+            SELECT id::text AS id FROM network_incidents
+            WHERE resolved_at IS NULL AND category = 'wan_issue' AND incident_scope = 'global'
+            ORDER BY started_at DESC LIMIT 1
+        """)
+        if any_open:
+            return  # Existing incident; don't create a second one
+
+        if await _recently_resolved(db, "wan_issue"):
+            return
+
+        affected_list = sorted(confirmed_down)
         await _create_incident(
             db,
             severity="high",
             category="wan_issue",
-            title=f"WAN packet loss: {avg_loss:.1f}%",
+            title=f"WAN outage [{root_cause}]: {', '.join(affected_list)}",
             description=(
-                f"Average WAN packet loss over the last 3 minutes: {avg_loss:.1f}%. "
-                f"Internal gateway appears reachable."
+                f"Root cause: {rc_label}. "
+                f"Targets with >{_WAN_LOSS_PCT_THRESHOLD:.0f}% packet loss "
+                f"for {_WAN_LOSS_CONSECUTIVE_THRESHOLD} consecutive cycles: "
+                f"{', '.join(affected_list)}."
             ),
-            evidence={"avg_loss_pct": round(avg_loss, 2)},
+            evidence={"affected_ips": affected_list, "root_cause": root_cause},
+            root_cause=root_cause,
+            incident_scope="global",
+            affected_component=root_cause,
         )
         link = _investigate_link()
-        msg = f"🔴 WAN packet loss: {avg_loss:.1f}% — Internal network OK. Check ISP."
+        msg  = f"🔴 WAN outage [{root_cause}]: {rc_label}. Affected: {', '.join(affected_list)}"
         if link:
             msg += f"\n{link}"
-        await _rate_limited_telegram(msg, dedup_key="wan_issue")
-        logger.warning("WAN packet loss incident opened: %.1f%%", avg_loss)
+        await _rate_limited_telegram(msg, dedup_key=f"wan_issue:{root_cause}")
+        logger.warning("WAN outage incident opened [%s]: %s", root_cause, ", ".join(affected_list))
 
-    elif open_inc:
-        await _resolve_incident(db, open_inc["id"])
-        await _send_telegram(f"✅ Resolved: {open_inc['title']}")
-        logger.info("WAN packet loss resolved")
+    else:
+        # Auto-resolve: all external IPs we have data for have been clean for N cycles.
+        open_inc = await _exec_one(db, """
+            SELECT id::text AS id, title FROM network_incidents
+            WHERE resolved_at IS NULL AND category = 'wan_issue' AND incident_scope = 'global'
+            ORDER BY started_at DESC LIMIT 1
+        """)
+        if not open_inc:
+            return
+
+        known_ips = [ip for ip in external_ips if ip in loss_by_ip]
+        all_recovered = known_ips and all(
+            _wan_loss_recover.get(ip, 0) >= _GLOBAL_RECOVER_THRESHOLD
+            for ip in known_ips
+        )
+        if all_recovered:
+            await _resolve_incident(db, open_inc["id"])
+            await _send_telegram(f"✅ Resolved: {open_inc['title']}")
+            logger.info("WAN outage resolved")
 
 
 async def _check_interface_errors(db: AsyncSession) -> None:
@@ -579,6 +837,13 @@ async def _check_devices_offline(db: AsyncSession) -> None:
         await _exec(db,
             "UPDATE device_registry SET is_online = false WHERE ip::text = :ip",
             {"ip": ip})
+        await _write_event(
+            db,
+            "device_offline",
+            device_ip=ip,
+            description=f"{hostname} ({ip}) went offline",
+            metadata={"device_type": device_type, "hostname": hostname},
+        )
         await db.commit()
 
         # Only alert for critical infrastructure and manually flagged devices
@@ -639,8 +904,16 @@ async def _check_devices_offline(db: AsyncSession) -> None:
         if to_resolve:
             await _resolve_incidents_batch(db, [inc["id"] for inc in to_resolve])
             for inc in to_resolve:
+                came_online_ip = inc["affected_ip"]
+                await _write_event(
+                    db,
+                    "device_online",
+                    device_ip=came_online_ip,
+                    description=f"Device came back online: {came_online_ip}",
+                )
                 await _send_telegram(f"✅ Resolved: {inc['title']}")
-                logger.info("Device came back online: %s", inc["affected_ip"])
+                logger.info("Device came back online: %s", came_online_ip)
+            await db.commit()
 
 
 def _classify_root_cause(affected: set[str]) -> str:
@@ -782,22 +1055,49 @@ async def _check_internal_latency(db: AsyncSession) -> None:
         # which silently misses legacy incidents created with affected_ip set (e.g.
         # incidents opened before the multi-target refactor that stored the gateway IP).
         open_inc = await _exec_one(db, """
-            SELECT id::text AS id, title, severity, started_at
+            SELECT id::text AS id, title, severity, started_at,
+                   incident_scope
             FROM network_incidents
             WHERE resolved_at IS NULL AND category = 'internal_latency'
             ORDER BY started_at DESC LIMIT 1
         """)
 
-    if alerting:
-        if open_inc:
-            return  # Incident already open; wait for full resolution
+    global _global_latency_recover_consecutive
 
-        if await _recently_resolved(db, "internal_latency"):
-            return
+    if alerting:
+        _global_latency_recover_consecutive = 0  # reset recovery counter whenever something is still alerting
 
         root_cause = _classify_root_cause(set(alerting))
         rc_label   = _ROOT_CAUSE_LABELS.get(root_cause, root_cause)
-        max_consec = max(_latency_consecutive.get(ip, 0) for ip in alerting)
+        is_global  = root_cause in _GLOBAL_ROOT_CAUSES
+
+        if is_global:
+            # Global incidents: dedup by root_cause across all categories.
+            global_inc = await _get_open_global_incident(db, root_cause)
+            if global_inc:
+                await _update_global_incident_targets(
+                    db, global_inc["id"], list(alerting.keys())
+                )
+                return
+            # Also check the old-style open_inc (same category, any scope).
+            if open_inc:
+                return
+
+            if await _recently_resolved(db, "internal_latency"):
+                return
+
+            max_consec   = max(_latency_consecutive.get(ip, 0) for ip in alerting)
+            affected_ip  = None  # global incidents have no single affected_ip
+        else:
+            # Device-scoped incident: use the IP of the affected device.
+            affected_ip = _ROOT_CAUSE_IP.get(root_cause)
+            if open_inc:
+                return  # Already tracking this device incident
+
+            if await _recently_resolved(db, "internal_latency", affected_ip=affected_ip):
+                return
+
+            max_consec = max(_latency_consecutive.get(ip, 0) for ip in alerting)
 
         await _create_incident(
             db,
@@ -810,6 +1110,7 @@ async def _check_internal_latency(db: AsyncSession) -> None:
                 f"Peak RTT: {max(alerting.values()):.1f} ms. "
                 f"Consecutive readings: {max_consec}."
             ),
+            affected_ip=affected_ip,
             evidence={
                 "root_cause":   root_cause,
                 "targets":      {ip: round(rtt, 2) for ip, rtt in alerting.items()},
@@ -817,7 +1118,29 @@ async def _check_internal_latency(db: AsyncSession) -> None:
                 "consecutive":  max_consec,
             },
             root_cause=root_cause,
+            incident_scope="global" if is_global else "device",
+            affected_component=root_cause,
         )
+
+        # Timeline event for each spiking target
+        for spike_ip, spike_rtt in alerting.items():
+            await _write_event(
+                db,
+                "latency_spike",
+                target_ip=spike_ip,
+                device_ip=affected_ip,
+                description=(
+                    f"Latency spike on {spike_ip} ({targets.get(spike_ip, '')}): "
+                    f"{spike_rtt:.1f} ms (threshold {_LATENCY_THRESHOLD_MS:.0f} ms)"
+                ),
+                metadata={
+                    "target_ip":    spike_ip,
+                    "rtt_ms":       round(spike_rtt, 2),
+                    "root_cause":   root_cause,
+                    "consecutive":  _latency_consecutive.get(spike_ip, 0),
+                },
+            )
+        await db.commit()
 
         tg_lines = [f"🔴 ALERT — {rc_label}", "Targets affected:"]
         for ip, rtt in sorted(alerting.items()):
@@ -828,19 +1151,38 @@ async def _check_internal_latency(db: AsyncSession) -> None:
         tg_lines.append(f"Consecutive readings: {max_consec}")
         tg_lines.append(f"Time: {now.strftime('%Y-%m-%d %H:%M:%S UTC')}")
 
-        link = _investigate_link()
+        link = _investigate_link(affected_ip)
         msg  = "\n".join(tg_lines)
         if link:
             msg += f"\n{link}"
 
-        await _rate_limited_telegram(msg, dedup_key="internal_latency")
+        dedup_key = f"internal_latency:{root_cause}" if is_global else f"internal_latency:{affected_ip or root_cause}"
+        await _rate_limited_telegram(msg, dedup_key=dedup_key)
         logger.warning(
-            "Latency spike incident opened [%s]: %s",
+            "Latency spike incident opened [%s, scope=%s]: %s",
             root_cause,
+            "global" if is_global else "device",
             ", ".join(f"{ip}={rtt:.1f}ms" for ip, rtt in sorted(alerting.items())),
         )
 
     elif open_inc:
+        # Determine if the open incident is global.
+        open_scope = open_inc.get("incident_scope", "device") if isinstance(open_inc, dict) else "device"
+        # If we can't read incident_scope from the dict (legacy row), treat as device.
+        is_open_global = (open_scope == "global")
+
+        if is_open_global:
+            # Global incidents require _GLOBAL_RECOVER_THRESHOLD consecutive clean cycles
+            # before auto-resolving, to avoid flapping on brief recoveries.
+            _global_latency_recover_consecutive += 1
+            if _global_latency_recover_consecutive < _GLOBAL_RECOVER_THRESHOLD:
+                logger.debug(
+                    "Global latency incident recovery cycle %d/%d — not yet resolving",
+                    _global_latency_recover_consecutive, _GLOBAL_RECOVER_THRESHOLD,
+                )
+                return
+
+        _global_latency_recover_consecutive = 0
         await _resolve_incident(db, open_inc["id"])
 
         # Suppress the resolve Telegram if:

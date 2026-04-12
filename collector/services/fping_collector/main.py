@@ -1,27 +1,29 @@
 """
-fping_collector — pings fixed targets every FPING_INTERVAL seconds and writes
-rtt_ms / packet_loss_pct to the Supabase latency_metrics table.
+fping_collector — pings LAN targets every FPING_INTERVAL seconds and writes
+rtt_ms / packet_loss_pct to the collector buffer (→ Railway backend).
 
-Targets:
-  - GATEWAY_IP              → category 'gateway'
-  - WAN1_GATEWAY_IP         → category 'wan'  (primary ISP gateway)
-  - WAN2_GATEWAY_IP         → category 'wan'  (secondary ISP gateway)
-  - ISP_GATEWAY_IP          → category 'wan'  (legacy single-WAN; ignored when WAN1/WAN2 set)
-  - INTERNAL_IPS            → category 'internal' (comma-separated, e.g. DC servers)
-  - WAN_MONITOR_IPS (comma-separated, default "8.8.8.8,1.1.1.1") → category 'wan'
+LAN-only targets (Phase 0D):
+  - INTERNAL_IPS  — comma-separated env var, e.g. 10.2.1.253,10.2.1.5,10.2.1.3,10.2.2.100
+
+WAN targets (1.1.1.1, 8.8.8.8, WAN gateways) are monitored exclusively by the
+Railway backend and must NOT be configured here.  See CLAUDE.md architecture section.
 
 fping output format parsed:
   192.168.1.1 : xmt/rcv/%loss = 3/3/0%, min/avg/max = 0.33/0.40/0.54
 """
 
+import sys
+sys.path.insert(0, '/app')
+
 import logging
 import os
 import re
 import subprocess
+import threading
 import time
 from datetime import datetime, timezone
 
-from supabase import create_client, Client
+from buffer import write_local, flush_to_backend
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,25 +33,13 @@ log = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-SUPABASE_URL    = os.environ["SUPABASE_URL"]
-SUPABASE_KEY    = os.environ["SUPABASE_KEY"]
-GATEWAY_IP      = os.environ.get("GATEWAY_IP", "").strip()
-WAN1_GATEWAY_IP = os.environ.get("WAN1_GATEWAY_IP", "").strip()
-WAN2_GATEWAY_IP = os.environ.get("WAN2_GATEWAY_IP", "").strip()
-ISP_GATEWAY_IP  = os.environ.get("ISP_GATEWAY_IP", "").strip()  # legacy single-WAN
-INTERNAL_IPS    = [
+BACKEND_URL    = os.environ["BACKEND_URL"]
+INTERNAL_IPS   = [
     ip.strip()
     for ip in os.environ.get("INTERNAL_IPS", "").split(",")
     if ip.strip()
 ]
-FPING_INTERVAL  = int(os.environ.get("FPING_INTERVAL", "30"))
-
-# WAN monitoring targets — comma-separated env var, defaults to 8.8.8.8,1.1.1.1
-_WAN_IPS = {
-    ip.strip()
-    for ip in os.environ.get("WAN_MONITOR_IPS", "8.8.8.8,1.1.1.1").split(",")
-    if ip.strip()
-}
+FPING_INTERVAL = int(os.environ.get("FPING_INTERVAL", "30"))
 
 # Regex for fping summary line:
 #   192.168.1.1 : xmt/rcv/%loss = 3/3/0%, min/avg/max = 0.33/0.40/0.54
@@ -60,27 +50,10 @@ _FPING_RE = re.compile(
 
 
 def _build_targets() -> dict[str, str]:
-    """Return {ip: category} dict of all targets."""
+    """Return {ip: category} dict of all LAN targets."""
     targets: dict[str, str] = {}
-
-    if GATEWAY_IP:
-        targets[GATEWAY_IP] = "gateway"
-
-    # Dual-WAN: prefer WAN1/WAN2 env vars; fall back to legacy ISP_GATEWAY_IP.
-    if WAN1_GATEWAY_IP or WAN2_GATEWAY_IP:
-        if WAN1_GATEWAY_IP:
-            targets[WAN1_GATEWAY_IP] = "wan"
-        if WAN2_GATEWAY_IP:
-            targets[WAN2_GATEWAY_IP] = "wan"
-    elif ISP_GATEWAY_IP:
-        targets[ISP_GATEWAY_IP] = "wan"
-
     for ip in INTERNAL_IPS:
         targets[ip] = "internal"
-
-    for ip in _WAN_IPS:
-        targets[ip] = "wan"
-
     return targets
 
 
@@ -112,9 +85,9 @@ def _parse_fping(output: str) -> dict[str, dict]:
         m = _FPING_RE.match(line.strip())
         if not m:
             continue
-        ip        = m.group(1)
-        loss_pct  = float(m.group(2))
-        avg_rtt   = float(m.group(3)) if m.group(3) else None
+        ip       = m.group(1)
+        loss_pct = float(m.group(2))
+        avg_rtt  = float(m.group(3)) if m.group(3) else None
         parsed[ip] = {"rtt_ms": avg_rtt, "packet_loss_pct": loss_pct}
     return parsed
 
@@ -141,37 +114,51 @@ def _build_rows(
     return rows
 
 
-def _write(client: Client, rows: list[dict]) -> None:
-    try:
-        client.table("latency_metrics").insert(rows).execute()
-    except Exception as exc:
-        log.error("Failed to write %d latency rows: %s", len(rows), exc)
+def _flush_loop() -> None:
+    """Background thread: flush buffer to backend every 60 seconds."""
+    while True:
+        time.sleep(60)
+        try:
+            flush_to_backend(BACKEND_URL)
+        except Exception as exc:
+            log.error("Flush error: %s", exc)
 
 
 def main() -> None:
     log.info(
-        "fping_collector starting — gateway=%s isp=%s interval=%ds",
-        GATEWAY_IP, ISP_GATEWAY_IP or "(not set)", FPING_INTERVAL,
+        "fping_collector starting — internal_ips=%s interval=%ds",
+        INTERNAL_IPS, FPING_INTERVAL,
     )
-    client: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+    # Start background flush thread
+    flush_thread = threading.Thread(target=_flush_loop, daemon=True)
+    flush_thread.start()
+    log.info("Buffer flush thread started (60s interval) → %s", BACKEND_URL)
 
     targets = _build_targets()
-    log.info("Fixed targets: %s", list(targets.keys()))
+    if not targets:
+        log.warning(
+            "No targets configured — set INTERNAL_IPS env var "
+            "(e.g. 10.2.1.253,10.2.1.5,10.2.1.3,10.2.2.100)"
+        )
+    else:
+        log.info("LAN targets: %s", list(targets.keys()))
 
     while True:
         start = time.monotonic()
 
         if targets:
-            now    = datetime.now(timezone.utc).isoformat()
-            output = _run_fping(list(targets.keys()))
+            now     = datetime.now(timezone.utc).isoformat()
+            output  = _run_fping(list(targets.keys()))
             results = _parse_fping(output)
-            rows   = _build_rows(targets, results, now)
-            _write(client, rows)
-            log.debug("Wrote %d latency rows", len(rows))
+            rows    = _build_rows(targets, results, now)
+            for row in rows:
+                write_local("/api/collector/metrics/latency", row)
+            log.debug("Buffered %d latency rows", len(rows))
         else:
-            log.warning("No targets configured — check GATEWAY_IP env var")
+            log.warning("No targets configured — check INTERNAL_IPS env var")
 
-        elapsed = time.monotonic() - start
+        elapsed  = time.monotonic() - start
         sleep_for = max(0.0, FPING_INTERVAL - elapsed)
         time.sleep(sleep_for)
 

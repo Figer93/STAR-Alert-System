@@ -7,6 +7,7 @@ import {
   ChevronRight
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
+import { NetworkStatusBanners } from '../network/NetworkStatusBanners'
 
 // ── UTC Clock ─────────────────────────────────────────────────────────────────
 function UTCClock() {
@@ -222,6 +223,7 @@ export function AppShell({ wsConnected, onSearchOpen, children }: AppShellProps)
       <div className="app-main">
         <Topbar wsConnected={wsConnected} onSearchOpen={onSearchOpen} />
         <main className="app-content">
+          <NetworkStatusBanners />
           {children}
         </main>
       </div>

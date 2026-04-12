@@ -10,12 +10,21 @@ Source liveness checks:
 
 If any source has been silent for more than SILENCE_THRESHOLD_SECONDS,
 a warning is logged (future: raise an alert via the main STAR backend).
+
+Heartbeat is sent to BOTH:
+  1. Supabase directly via supabase-py (kept as fallback)
+  2. Railway backend POST /api/collector/heartbeat
 """
+
+import sys
+sys.path.insert(0, '/app')
 
 import json
 import logging
 import os
 import time
+import urllib.request
+import urllib.error
 from datetime import datetime, timedelta, timezone
 
 from supabase import create_client, Client
@@ -28,10 +37,11 @@ log = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-SUPABASE_URL             = os.environ["SUPABASE_URL"]
-SUPABASE_KEY             = os.environ["SUPABASE_KEY"]
-COLLECTOR_ID             = os.environ.get("COLLECTOR_ID", "office-main")
-REPORT_INTERVAL          = int(os.environ.get("REPORT_INTERVAL", "60"))
+SUPABASE_URL              = os.environ["SUPABASE_URL"]
+SUPABASE_KEY              = os.environ["SUPABASE_KEY"]
+BACKEND_URL               = os.environ.get("BACKEND_URL", "").strip()
+COLLECTOR_ID              = os.environ.get("COLLECTOR_ID", "office-main")
+REPORT_INTERVAL           = int(os.environ.get("REPORT_INTERVAL", "60"))
 SILENCE_THRESHOLD_SECONDS = 300   # 5 minutes
 
 # Map source name → table to query for its latest row.
@@ -97,7 +107,8 @@ def _check_sources(client: Client) -> dict[str, bool]:
     return statuses
 
 
-def _write_heartbeat(client: Client, sources: dict[str, bool]) -> None:
+def _write_heartbeat_supabase(client: Client, sources: dict[str, bool]) -> None:
+    """Write heartbeat directly to Supabase (kept as fallback)."""
     now = datetime.now(timezone.utc).isoformat()
     row = {
         "collector_id": COLLECTOR_ID,
@@ -110,12 +121,46 @@ def _write_heartbeat(client: Client, sources: dict[str, bool]) -> None:
         # one row per collector instance, not a growing history.
         client.table("collector_heartbeat").upsert(row).execute()
         log.info(
-            "Heartbeat written — collector=%s sources=%s",
+            "Heartbeat written to Supabase — collector=%s sources=%s",
             COLLECTOR_ID,
             {k: ("ok" if v else "SILENT") for k, v in sources.items()},
         )
     except Exception as exc:
-        log.error("Failed to write heartbeat: %s", exc)
+        log.error("Failed to write heartbeat to Supabase: %s", exc)
+
+
+def _post_heartbeat_backend(sources: dict[str, bool]) -> None:
+    """POST heartbeat to Railway backend /api/collector/heartbeat."""
+    if not BACKEND_URL:
+        return
+
+    now = datetime.now(timezone.utc).isoformat()
+    payload = {
+        "collector_id": COLLECTOR_ID,
+        "last_seen":    now,
+        "version":      "0.1.0",
+        "sources":      sources,
+    }
+    body = json.dumps(payload).encode("utf-8")
+    url  = f"{BACKEND_URL.rstrip('/')}/api/collector/heartbeat"
+    req  = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            if resp.status == 200:
+                log.debug("Heartbeat posted to backend OK")
+            else:
+                log.warning(
+                    "Backend heartbeat returned HTTP %d", resp.status
+                )
+    except urllib.error.URLError as exc:
+        log.warning("Could not post heartbeat to backend: %s", exc.reason)
+    except Exception as exc:
+        log.error("Unexpected error posting heartbeat to backend: %s", exc)
 
 
 def main() -> None:
@@ -129,7 +174,8 @@ def main() -> None:
         start = time.monotonic()
 
         sources = _check_sources(client)
-        _write_heartbeat(client, sources)
+        _write_heartbeat_supabase(client, sources)
+        _post_heartbeat_backend(sources)
 
         elapsed   = time.monotonic() - start
         sleep_for = max(0.0, REPORT_INTERVAL - elapsed)

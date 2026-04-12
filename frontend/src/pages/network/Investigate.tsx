@@ -66,11 +66,23 @@ interface Hypothesis {
   recommended_action: string
 }
 
+interface GlobalIncident {
+  id:                 string
+  started_at:         string
+  resolved_at:        string | null
+  severity:           string
+  title:              string
+  root_cause:         string | null
+  affected_component: string | null
+}
+
 interface InvestigateResponse {
-  device:     Record<string, unknown> | null
-  timeline:   TimelineEvent[]
-  metrics:    InvestigateMetrics
-  hypothesis: Hypothesis
+  device:           Record<string, unknown> | null
+  timeline:         TimelineEvent[]
+  metrics:          InvestigateMetrics
+  hypothesis:       Hypothesis
+  global_incidents: GlobalIncident[]
+  device_incidents: IncidentRecord[]
 }
 
 interface ErrorBucket   { time: string; rx_errors: number; tx_errors: number }
@@ -553,59 +565,124 @@ function PortErrorDetail({ metrics }: { metrics: InvestigateMetrics }) {
   )
 }
 
+// ── Global Outage Banner ──────────────────────────────────────────────────────
+
+function GlobalOutageBanner({ incidents }: { incidents: GlobalIncident[] }) {
+  if (incidents.length === 0) return null
+  const open   = incidents.filter(i => !i.resolved_at)
+  const closed = incidents.filter(i => !!i.resolved_at)
+  const color  = open.length > 0 ? '#ef4444' : '#eab308'
+  const bg     = open.length > 0 ? '#ef444412' : '#eab30812'
+
+  return (
+    <div style={{
+      background: bg, border: `1px solid ${color}44`,
+      borderLeft: `4px solid ${color}`, borderRadius: 'var(--radius)',
+      padding: '12px 16px',
+    }}>
+      <p style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color, margin: '0 0 8px' }}>
+        {open.length > 0 ? 'Active Global Outages During This Window' : 'Global Outages During This Window (Resolved)'}
+      </p>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {incidents.map(inc => {
+          const sev   = SEV_COLORS[inc.severity] ?? '#6b7280'
+          const start = new Date(inc.started_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+          const resolvedText = inc.resolved_at
+            ? ` · Resolved ${new Date(inc.resolved_at).toLocaleString([], { hour: '2-digit', minute: '2-digit' })}`
+            : ' · Still open'
+          return (
+            <div key={inc.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+              <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: sev, border: `1px solid ${sev}44`, borderRadius: 4, padding: '1px 5px', flexShrink: 0, marginTop: 1 }}>
+                {inc.severity}
+              </span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <span style={{ fontSize: 12, color: 'var(--text)', fontWeight: 600 }}>{inc.title}</span>
+                <span style={{ fontSize: 11, color: 'var(--text-dim)', marginLeft: 8 }}>Started {start}{resolvedText}</span>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+      <p style={{ fontSize: 11, color: 'var(--text-dim)', margin: '8px 0 0', fontStyle: 'italic' }}>
+        These are network-wide events — not specific to this device.
+      </p>
+    </div>
+  )
+}
+
 // ── Diagnosis Panel ───────────────────────────────────────────────────────────
 
-function DiagnosisPanel({ hypothesis, metrics }: { hypothesis: Hypothesis; metrics: InvestigateMetrics }) {
-  const color   = diagnosisColor(hypothesis.likely_cause, hypothesis.confidence)
-  const label   = CAUSE_LABELS[hypothesis.likely_cause] ?? hypothesis.likely_cause
+function DiagnosisPanel({ hypothesis, metrics, globalIncidents }: {
+  hypothesis:      Hypothesis
+  metrics:         InvestigateMetrics
+  globalIncidents: GlobalIncident[]
+}) {
+  // If the backend's hypothesis is wan_issue but there are active global incidents,
+  // the WAN problem is global — not device-specific. Show clean device diagnosis.
+  const isWanCausedByGlobal = hypothesis.likely_cause === 'wan_issue' && globalIncidents.length > 0
+  const effectiveCause      = isWanCausedByGlobal ? 'healthy' : hypothesis.likely_cause
+  const effectiveLabel      = isWanCausedByGlobal ? 'No Device-Specific Issues Found' : (CAUSE_LABELS[hypothesis.likely_cause] ?? hypothesis.likely_cause)
+
+  const color   = diagnosisColor(effectiveCause, hypothesis.confidence)
   const confBg  = { high: '#ef444422', medium: '#eab30822', low: '#6b728022' }[hypothesis.confidence]
   const confClr = { high: '#ef4444',   medium: '#eab308',   low: '#9ca3af'  }[hypothesis.confidence]
 
   return (
     <div className="card" style={{ padding: '16px 20px', borderLeft: `4px solid ${color}`, boxShadow: `0 0 20px ${color}18` }}>
-      <SectionHead>Diagnosis</SectionHead>
+      <SectionHead>Device Diagnosis</SectionHead>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14, flexWrap: 'wrap' }}>
-        <p style={{ fontSize: 22, fontWeight: 800, color, margin: 0, flex: 1 }}>{label}</p>
-        <span style={{
-          background: confBg, color: confClr, border: `1px solid ${confClr}55`,
-          borderRadius: 100, padding: '3px 12px',
-          fontSize: 10, fontWeight: 800, letterSpacing: '0.1em', textTransform: 'uppercase', flexShrink: 0,
-        }}>
-          {hypothesis.confidence} confidence
-        </span>
+        <p style={{ fontSize: 22, fontWeight: 800, color, margin: 0, flex: 1 }}>{effectiveLabel}</p>
+        {!isWanCausedByGlobal && (
+          <span style={{
+            background: confBg, color: confClr, border: `1px solid ${confClr}55`,
+            borderRadius: 100, padding: '3px 12px',
+            fontSize: 10, fontWeight: 800, letterSpacing: '0.1em', textTransform: 'uppercase', flexShrink: 0,
+          }}>
+            {hypothesis.confidence} confidence
+          </span>
+        )}
       </div>
 
-      {hypothesis.evidence.length > 0 && (
-        <div style={{ marginBottom: 14 }}>
-          <p style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-dim)', margin: '0 0 8px' }}>Evidence</p>
-          {hypothesis.evidence.map((e, i) => (
-            <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 4 }}>
-              <span style={{ color, fontSize: 14, lineHeight: 1.5, flexShrink: 0 }}>•</span>
-              <span style={{ fontSize: 12, color: 'var(--text)', lineHeight: 1.5 }}>{e}</span>
+      {isWanCausedByGlobal ? (
+        <p style={{ fontSize: 12, color: 'var(--text-dim)', margin: '0 0 14px', lineHeight: 1.6 }}>
+          WAN/ISP packet loss was detected during this window, but a global outage was active at the same time.
+          The connectivity issue is network-wide — not caused by this device. See the global outage banner above.
+        </p>
+      ) : (
+        <>
+          {hypothesis.evidence.length > 0 && (
+            <div style={{ marginBottom: 14 }}>
+              <p style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-dim)', margin: '0 0 8px' }}>Evidence</p>
+              {hypothesis.evidence.map((e, i) => (
+                <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 4 }}>
+                  <span style={{ color, fontSize: 14, lineHeight: 1.5, flexShrink: 0 }}>•</span>
+                  <span style={{ fontSize: 12, color: 'var(--text)', lineHeight: 1.5 }}>{e}</span>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
-      )}
+          )}
 
-      {hypothesis.likely_cause === 'cable_or_nic' && (
-        <PortErrorDetail metrics={metrics} />
-      )}
+          {hypothesis.likely_cause === 'cable_or_nic' && (
+            <PortErrorDetail metrics={metrics} />
+          )}
 
-      <WhyWeThink cause={hypothesis.likely_cause} />
+          <WhyWeThink cause={hypothesis.likely_cause} />
 
-      {hypothesis.recommended_action && (
-        <div style={{
-          background:   hypothesis.likely_cause === 'healthy' ? '#22c55e0d' : '#eab3080d',
-          border:       `1px solid ${hypothesis.likely_cause === 'healthy' ? '#22c55e33' : '#eab30833'}`,
-          borderRadius: 'var(--radius)', padding: '10px 14px',
-        }}>
-          <p style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-dim)', margin: '0 0 5px' }}>
-            Recommended Action
-          </p>
-          <p style={{ fontSize: 12, color: 'var(--text)', margin: 0, lineHeight: 1.6 }}>
-            → {hypothesis.recommended_action}
-          </p>
-        </div>
+          {hypothesis.recommended_action && (
+            <div style={{
+              background:   effectiveCause === 'healthy' ? '#22c55e0d' : '#eab3080d',
+              border:       `1px solid ${effectiveCause === 'healthy' ? '#22c55e33' : '#eab30833'}`,
+              borderRadius: 'var(--radius)', padding: '10px 14px',
+            }}>
+              <p style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-dim)', margin: '0 0 5px' }}>
+                Recommended Action
+              </p>
+              <p style={{ fontSize: 12, color: 'var(--text)', margin: 0, lineHeight: 1.6 }}>
+                → {hypothesis.recommended_action}
+              </p>
+            </div>
+          )}
+        </>
       )}
     </div>
   )
@@ -614,8 +691,14 @@ function DiagnosisPanel({ hypothesis, metrics }: { hypothesis: Hypothesis; metri
 // ── Timeline Panel ────────────────────────────────────────────────────────────
 
 const EVENT_ICONS: Record<string, string> = {
-  port_errors: '🔌', latency_spike: '📡', incident: '🚨',
-  device_online: '🟢', device_offline: '🔴',
+  port_errors:        '🔌',
+  port_error:         '🔌',
+  latency_spike:      '📡',
+  incident:           '🚨',
+  incident_created:   '🚨',
+  incident_resolved:  '✅',
+  device_online:      '🟢',
+  device_offline:     '🔴',
 }
 
 function TimelinePanel({ timeline }: { timeline: TimelineEvent[] }) {
@@ -747,17 +830,7 @@ function MetricsPanel({ metrics, detail }: { metrics: InvestigateMetrics; detail
                 </div>
               )
             })}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-              {([
-                { label: 'Gateway loss', value: `${metrics.avg_packet_loss_gateway_pct.toFixed(1)}%`, ok: metrics.avg_packet_loss_gateway_pct < 5 },
-                { label: 'WAN loss',     value: `${metrics.avg_packet_loss_wan_pct.toFixed(1)}%`,     ok: metrics.avg_packet_loss_wan_pct < 5     },
-              ] as const).map(({ label, value, ok }) => (
-                <div key={label} style={{ textAlign: 'center', padding: '4px 8px', background: 'var(--bg-surface)', borderRadius: 4, border: '1px solid var(--border)' }}>
-                  <p style={{ fontSize: 9, color: 'var(--text-dim)', margin: '0 0 2px', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 700 }}>{label}</p>
-                  <p style={{ fontSize: 14, fontWeight: 700, color: ok ? '#22c55e' : '#ef4444', margin: 0 }}>{value}</p>
-                </div>
-              ))}
-            </div>
+            {/* Gateway/WAN loss is a global metric — shown in the global outage banner, not here */}
           </div>
         </ChartCard>
 
@@ -875,18 +948,18 @@ function FlowsPanel({ ip, flows }: { ip: string; flows: RawFlow[] }) {
 
 // ── Incidents Panel ───────────────────────────────────────────────────────────
 
-function IncidentsPanel({ incidents }: { incidents: IncidentRecord[] }) {
+function IncidentsPanel({ deviceIncidents }: { deviceIncidents: IncidentRecord[] }) {
   return (
     <div className="card" style={{ padding: '16px 20px' }}>
-      <SectionHead>Past Incidents</SectionHead>
-      {incidents.length === 0 ? (
-        <p style={{ color: 'var(--text-dim)', fontSize: 12, margin: 0, fontStyle: 'italic' }}>No previous incidents for this device</p>
+      <SectionHead>Device Incidents (last 20)</SectionHead>
+      {deviceIncidents.length === 0 ? (
+        <p style={{ color: 'var(--text-dim)', fontSize: 12, margin: 0, fontStyle: 'italic' }}>No device-specific incidents recorded</p>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           <p style={{ fontSize: 12, color: 'var(--text-dim)', margin: '0 0 4px' }}>
-            {incidents.length} incident{incidents.length !== 1 ? 's' : ''} found
+            {deviceIncidents.length} incident{deviceIncidents.length !== 1 ? 's' : ''} found
           </p>
-          {incidents.map(inc => {
+          {deviceIncidents.map(inc => {
             const sev      = SEV_COLORS[inc.severity] ?? '#6b7280'
             const resolved = !!inc.resolved_at
             return (
@@ -1212,8 +1285,6 @@ ${tl.length === 0 ? '<p>No events in selected period.</p>' : `
     packets:  f.packets  as number,
   }))
 
-  const incidents: IncidentRecord[] = (devDetail?.incidents ?? []) as unknown as IncidentRecord[]
-
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
@@ -1408,11 +1479,23 @@ ${tl.length === 0 ? '<p>No events in selected period.</p>' : `
           </div>
 
           <DevicePanel           ip={selectedIp} inv={invData} detail={devDetail} />
-          <DiagnosisPanel        hypothesis={invData.hypothesis} metrics={invData.metrics} />
+          {invData.global_incidents.length > 0 && (
+            <GlobalOutageBanner incidents={invData.global_incidents} />
+          )}
+          <DiagnosisPanel        hypothesis={invData.hypothesis} metrics={invData.metrics} globalIncidents={invData.global_incidents} />
           <TimelinePanel         timeline={invData.timeline} />
-          <MetricsPanel          metrics={invData.metrics} detail={devDetail} />
+          {invData.metrics.bytes_sent === 0 && invData.metrics.bytes_received === 0 && invData.timeline.length === 0 ? (
+            <div className="card" style={{ padding: '24px 20px', textAlign: 'center' }}>
+              <p style={{ color: 'var(--text-dim)', fontSize: 13, margin: 0 }}>No data available for this device in the selected window</p>
+              <p style={{ color: 'var(--text-dim)', fontSize: 11, margin: '6px 0 0', fontStyle: 'italic' }}>
+                Try widening the time range or check that the collector was running during this period.
+              </p>
+            </div>
+          ) : (
+            <MetricsPanel        metrics={invData.metrics} detail={devDetail} />
+          )}
           <FlowsPanel            ip={selectedIp} flows={flows} />
-          <IncidentsPanel        incidents={incidents} />
+          <IncidentsPanel        deviceIncidents={invData.device_incidents} />
           <RawPortMetricsPanel   metrics={invData.metrics} />
         </>
       )}

@@ -3,31 +3,30 @@ import { useNavigate } from 'react-router-dom'
 import { AlertTriangle, CheckCircle2, X, ExternalLink, ChevronDown, ChevronUp } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import SeverityBadge from '../../components/network/SeverityBadge'
+import { resolveIncident, getNetworkIncidents } from '../../lib/api'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
 interface IncidentRow {
-  id:               string
-  started_at:       string
-  resolved_at:      string | null
-  severity:         string
-  category:         string
-  affected_ip:      string | null
-  affected_switch:  string | null
-  affected_port:    string | null
-  title:            string
-  description:      string | null
-  evidence:         Record<string, unknown> | null
-  root_cause:       string | null
-  resolution_notes: string | null
-  auto_detected:    boolean
+  id:                 string
+  started_at:         string
+  resolved_at:        string | null
+  severity:           string
+  category:           string
+  affected_ip:        string | null
+  affected_switch:    string | null
+  affected_port:      string | null
+  title:              string
+  description:        string | null
+  evidence:           Record<string, unknown> | null
+  root_cause:         string | null
+  resolution_notes:   string | null
+  auto_detected:      boolean
+  incident_scope:     string
+  affected_component: string | null
 }
 
 type StatusFilter = 'open' | 'resolved' | 'all'
-
-// ── Constants ──────────────────────────────────────────────────────────────────
-
-const BASE = (import.meta.env.VITE_API_URL ?? '') + '/api/network'
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -106,16 +105,10 @@ function IncidentPanel({
     setSubmitting(true)
     setResolveErr(null)
     try {
-      const res = await fetch(`${BASE}/incidents/${incident.id}/resolve`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          root_cause:       rootCause.trim() || null,
-          resolution_notes: notes.trim()     || null,
-        }),
+      const updated: IncidentRow = await resolveIncident(incident.id, {
+        root_cause:       rootCause.trim() || null,
+        resolution_notes: notes.trim()     || null,
       })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const updated: IncidentRow = await res.json()
       onResolved(updated)
       setResolving(false)
     } catch (e) {
@@ -411,9 +404,8 @@ export default function Incidents() {
   const load = useCallback((filter: StatusFilter) => {
     setLoading(true)
     setError(null)
-    fetch(`${BASE}/incidents?status=${filter}&limit=200`)
-      .then(r => r.ok ? r.json() as Promise<IncidentRow[]> : Promise.reject(`HTTP ${r.status}`))
-      .then(setIncidents)
+    getNetworkIncidents(filter, 200)
+      .then(rows => setIncidents(rows as IncidentRow[]))
       .catch(e => setError(String(e)))
       .finally(() => setLoading(false))
   }, [])
@@ -423,9 +415,8 @@ export default function Incidents() {
   // Also load "all" for stats (keep separate)
   const [allIncidents, setAllIncidents] = useState<IncidentRow[]>([])
   useEffect(() => {
-    fetch(`${BASE}/incidents?status=all&limit=500`)
-      .then(r => r.ok ? r.json() as Promise<IncidentRow[]> : [])
-      .then(setAllIncidents)
+    getNetworkIncidents('all', 500)
+      .then(rows => setAllIncidents(rows as IncidentRow[]))
       .catch(() => {})
   }, [])
 

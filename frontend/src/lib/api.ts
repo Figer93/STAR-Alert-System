@@ -136,6 +136,47 @@ export const updateChannelSettings = (
 ) =>
   api.put<NotificationChannelSettings>(`/notification-settings/${channel}`, data).then(r => r.data)
 
+// ── Network overview ──────────────────────────────────────────────────────────
+
+export interface NetworkOverviewData {
+  wan:             { status: string; latency_ms: number | null; packet_loss_pct: number | null }
+  internal:        { status: string; active_devices: number; error_ports: number }
+  collector:       { online: boolean; last_seen: string | null; sources: Record<string, boolean> }
+  open_incidents:  number
+  bytes_last_hour: number
+  health_score:    number
+}
+
+export const getNetworkOverview = () =>
+  api.get<NetworkOverviewData>('/network/overview').then(r => r.data)
+
+// ── Network incidents ─────────────────────────────────────────────────────────
+
+export interface IncidentResolvePayload {
+  root_cause?: string | null
+  resolution_notes?: string | null
+}
+
+export const resolveIncident = (id: string, payload: IncidentResolvePayload = {}) =>
+  api.post(`/network/incidents/${id}/resolve`, payload).then(r => r.data)
+
+export interface OpenIncidentRow {
+  id:                 string
+  started_at:         string
+  resolved_at:        string | null
+  severity:           string
+  category:           string
+  title:              string
+  incident_scope:     string
+  affected_component: string | null
+}
+
+export const getOpenNetworkIncidents = () =>
+  api.get<OpenIncidentRow[]>('/network/incidents', { params: { status: 'open', limit: 50 } }).then(r => r.data)
+
+export const getNetworkIncidents = (status: 'open' | 'resolved' | 'all', limit = 200) =>
+  api.get<OpenIncidentRow[]>('/network/incidents', { params: { status, limit } }).then(r => r.data)
+
 // ── CSV export ────────────────────────────────────────────────────────────────
 
 export const exportAlertsCsv = () => {

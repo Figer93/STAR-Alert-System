@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.config import settings
 from backend.database import init_db
 from backend.network_monitor import run_network_checks
-from backend.routers import alerts, ingest, maintenance, network, notifications, notification_settings, rules, sources, stats, ws
+from backend.routers import alerts, collector, ingest, maintenance, network, notifications, notification_settings, rules, sources, stats, ws
 from backend.websocket_manager import ws_manager
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -352,6 +352,7 @@ app.add_middleware(
 
 # Routers
 app.include_router(alerts.router)
+app.include_router(collector.router)
 app.include_router(sources.router)
 app.include_router(stats.router)
 app.include_router(rules.router)
