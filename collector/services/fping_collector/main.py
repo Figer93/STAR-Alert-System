@@ -41,6 +41,10 @@ INTERNAL_IPS   = [
 ]
 FPING_INTERVAL = int(os.environ.get("FPING_INTERVAL", "30"))
 
+# pfSense LAN gateway must always be present — latency to it is used by the
+# backend to distinguish PFSENSE vs WAN root causes.
+_PFSENSE_IP = "10.2.1.253"
+
 # Regex for fping summary line:
 #   192.168.1.1 : xmt/rcv/%loss = 3/3/0%, min/avg/max = 0.33/0.40/0.54
 _FPING_RE = re.compile(
@@ -143,6 +147,13 @@ def main() -> None:
         )
     else:
         log.info("LAN targets: %s", list(targets.keys()))
+        if _PFSENSE_IP not in targets:
+            log.warning(
+                "pfSense LAN gateway %s is missing from INTERNAL_IPS — "
+                "add it so the backend can distinguish PFSENSE vs WAN root causes. "
+                "Current INTERNAL_IPS: %s",
+                _PFSENSE_IP, INTERNAL_IPS,
+            )
 
     while True:
         start = time.monotonic()

@@ -848,6 +848,32 @@ async def _check_devices_offline(db: AsyncSession) -> None:
                          device_type, hostname, ip)
             continue
 
+        # Dedup by root_cause — one open DEVICE_OFFLINE incident per IP.
+        # Mirrors the global WAN incident dedup pattern.  If an open incident
+        # already exists, update its evidence timestamp and skip creation so we
+        # don't generate a new row every 60-second cycle while the device stays
+        # offline.
+        open_device_inc = await _exec_one(db, """
+            SELECT id::text AS id FROM network_incidents
+            WHERE resolved_at IS NULL
+              AND root_cause = 'DEVICE_OFFLINE'
+              AND affected_ip::text = :ip
+            LIMIT 1
+        """, {"ip": ip})
+        if open_device_inc:
+            await _exec(db, """
+                UPDATE network_incidents
+                SET evidence = jsonb_set(
+                    COALESCE(evidence, '{}'::jsonb),
+                    '{last_offline_seen_at}',
+                    to_jsonb(NOW()::text)
+                )
+                WHERE id = :id::uuid
+            """, {"id": open_device_inc["id"]})
+            await db.commit()
+            continue
+
+        # Fallback dedup for legacy incidents created before root_cause was added.
         if await _get_open_incident(db, "device_offline", affected_ip=ip):
             continue
         if await _recently_resolved(db, "device_offline", affected_ip=ip):
@@ -869,6 +895,8 @@ async def _check_devices_offline(db: AsyncSession) -> None:
                 f"{_DEVICE_STALE_MINUTES} minutes. Last seen: {last_seen_str}."
             ),
             affected_ip=ip,
+            root_cause="DEVICE_OFFLINE",
+            incident_scope="device",
             evidence={"last_seen": last_seen_str, "device_type": device_type},
         )
         link = _investigate_link(ip)
@@ -1356,6 +1384,18 @@ async def run_network_checks() -> None:
         "Network monitor starting — %d checks registered",
         len(_LATENCY_TARGET_ROLES) + n_wan,
     )
+    logger.info(
+        "Network monitor WAN targets — WAN1_GATEWAY_IP=%s  WAN2_GATEWAY_IP=%s  "
+        "WAN_GATEWAY_IP(legacy)=%s",
+        wan1 or "(not set)",
+        wan2 or "(not set)",
+        wan_legacy or "(not set)",
+    )
+    if not wan1 and not wan2 and not wan_legacy:
+        logger.warning(
+            "No WAN gateway IPs configured — WAN packet-loss check will not fire. "
+            "Set WAN1_GATEWAY_IP and/or WAN2_GATEWAY_IP in Railway environment variables."
+        )
 
     while True:
         await asyncio.sleep(60)
