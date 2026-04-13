@@ -635,6 +635,7 @@ async def _ping_and_store_wan_targets(db: AsyncSession) -> None:
     results = await _fping_once(all_ips)
 
     now = datetime.now(timezone.utc)
+    stored = 0
     for ip in all_ips:
         stats = results.get(ip, {"rtt_ms": None, "packet_loss_pct": 100.0})
         try:
@@ -642,9 +643,7 @@ async def _ping_and_store_wan_targets(db: AsyncSession) -> None:
                 INSERT INTO latency_metrics
                     (time, target_name, target_ip, target_type, rtt_ms, packet_loss_pct)
                 VALUES
-                    (:time, :name, CAST(:ip AS INET),
-                     CAST(:ttype AS latency_target_type_enum),
-                     :rtt_ms, :loss)
+                    (:time, :name, CAST(:ip AS INET), :ttype, :rtt_ms, :loss)
             """), {
                 "time":  now,
                 "name":  ip_name[ip],
@@ -653,12 +652,14 @@ async def _ping_and_store_wan_targets(db: AsyncSession) -> None:
                 "rtt_ms": stats["rtt_ms"],
                 "loss":  stats["packet_loss_pct"],
             })
+            stored += 1
         except Exception as exc:
             logger.error("Failed to store WAN ping result for %s: %s", ip, exc)
+            await db.rollback()
     await db.commit()
-    logger.debug(
-        "WAN ping stored: %d targets, fping returned %d results",
-        len(all_ips), len(results),
+    logger.info(
+        "WAN ping cycle complete: %d/%d targets stored (fping returned %d results)",
+        stored, len(all_ips), len(results),
     )
 
 
