@@ -136,7 +136,7 @@ _COLLAB_PORTS = {3478, 3479, 8801, 8802, 19302, 19305}
 # ── Pydantic response models ──────────────────────────────────────────────────
 
 class WanStatus(BaseModel):
-    status: Literal["healthy", "degraded", "down"]
+    status: Literal["healthy", "degraded", "down", "unknown"]
     latency_ms: Optional[float]
     packet_loss_pct: Optional[float]
 
@@ -774,7 +774,10 @@ async def get_overview(db: AsyncSession = Depends(get_db)):
         WHERE time > NOW() - INTERVAL '1 hour'
     """, default=0)
 
-    has_data = bool(lat_rows and lat_rows[0]["wan_rtt"] is not None)
+    # has_data is True when at least one wan/dns row exists in the window.
+    # Use wan_loss (not wan_rtt) — rtt_ms is NULL when a host is unreachable,
+    # so checking rtt would wrongly return 'unknown' during a WAN outage.
+    has_data = bool(lat_rows and lat_rows[0]["wan_loss"] is not None)
 
     total_error_ports = warning_ports + error_ports
 
@@ -783,9 +786,9 @@ async def get_overview(db: AsyncSession = Depends(get_db)):
 
     result = NetworkOverview(
         wan=WanStatus(
-            status=_wan_status(wan_loss, wan_rtt),
-            latency_ms=round(wan_rtt, 2) if wan_rtt else None,
-            packet_loss_pct=round(wan_loss, 2) if wan_loss else None,
+            status="unknown" if not has_data else _wan_status(wan_loss, wan_rtt),
+            latency_ms=round(wan_rtt, 2) if has_data and wan_rtt else None,
+            packet_loss_pct=round(wan_loss, 2) if has_data else None,
         ),
         internal=InternalStatus(
             status=_internal_status(total_error_ports, int(active_devices)),

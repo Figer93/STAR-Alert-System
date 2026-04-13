@@ -555,8 +555,8 @@ async def _tcp_connect_rtt(ip: str) -> dict:
     """
     Measure reachability and RTT for a single IP using TCP connect.
 
-    Tries port 80 first (more likely to be open or at least refused on routers),
-    then port 443 as a fallback.  No raw sockets — works without CAP_NET_RAW.
+    Tries ports 80, 443, 53, 22 in order.  No raw sockets — works without
+    CAP_NET_RAW.  If all TCP ports fail, falls back to ICMP ping.
 
     Reachability rules:
       ConnectionRefusedError (TCP RST) on any port
@@ -564,19 +564,18 @@ async def _tcp_connect_rtt(ip: str) -> dict:
             A router/firewall that sends RST is provably up.
 
       asyncio.TimeoutError on a port
-          → no response within 2 s; try the next port.
-            If BOTH ports time out → 100 % packet loss, rtt = None.
+          → no response within 3 s; try the next port.
+            If ALL ports time out → try ICMP ping fallback.
 
       OSError (ENETUNREACH, EHOSTUNREACH, etc.)
           → local routing failure; try next port.
-            Both failing this way also → 100 % packet loss.
     """
-    for port in (80, 443):
+    for port in (80, 443, 53, 22):
         t0 = asyncio.get_event_loop().time()
         try:
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(ip, port),
-                timeout=2.0,
+                timeout=3.0,
             )
             rtt_ms = (asyncio.get_event_loop().time() - t0) * 1000
             writer.close()
@@ -590,9 +589,31 @@ async def _tcp_connect_rtt(ip: str) -> dict:
             rtt_ms = (asyncio.get_event_loop().time() - t0) * 1000
             return {"rtt_ms": round(rtt_ms, 2), "packet_loss_pct": 0.0}
         except asyncio.TimeoutError:
-            continue  # no response — try the other port
-        except OSError:
-            continue  # routing/network error — try the other port
+            logger.debug("TCP port %d timeout for %s, trying next port", port, ip)
+            continue  # no response — try the next port
+        except OSError as exc:
+            logger.debug("TCP port %d OSError for %s: %s", port, ip, exc)
+            continue  # routing/network error — try next port
+
+    # All TCP ports timed out — try ICMP ping as last resort
+    logger.debug("All TCP ports (80,443,53,22) failed for %s, trying ICMP fallback", ip)
+    try:
+        t0 = asyncio.get_event_loop().time()
+        proc = await asyncio.create_subprocess_exec(
+            "ping", "-c", "1", "-W", "2", ip,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await asyncio.wait_for(proc.wait(), timeout=5.0)
+        rtt_ms = (asyncio.get_event_loop().time() - t0) * 1000
+        if proc.returncode == 0:
+            logger.debug("ICMP ping succeeded for %s (rtt ~%.0f ms)", ip, rtt_ms)
+            return {"rtt_ms": round(rtt_ms, 2), "packet_loss_pct": 0.0}
+        logger.debug("ICMP ping returned non-zero exit for %s: rc=%d", ip, proc.returncode)
+    except (asyncio.TimeoutError, PermissionError, FileNotFoundError, OSError) as exc:
+        logger.debug("ICMP ping fallback failed for %s: %s", ip, exc)
+
+    logger.warning("All TCP ports and ICMP ping failed for %s — host unreachable", ip)
     return {"rtt_ms": None, "packet_loss_pct": 100.0}
 
 
