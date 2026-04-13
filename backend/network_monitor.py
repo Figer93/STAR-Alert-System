@@ -1601,8 +1601,9 @@ async def _check_traffic_anomaly(db: AsyncSession) -> None:
 
 # ── Maintenance: cleanup + DB size ────────────────────────────────────────────
 
-_RETENTION_HOURS_NORMAL = 3          # hours — switch_port_metrics, latency_metrics
-_RETENTION_HOURS_EMERGENCY = 1       # hours — used when DB > 400 MB
+_RETENTION_HOURS_PORT_METRICS = 12   # hours — switch_port_metrics
+_RETENTION_HOURS_LATENCY = 24        # hours — latency_metrics
+_RETENTION_HOURS_EMERGENCY = 1       # hours — both metrics tables when DB > 400 MB
 _RETENTION_DAYS_EVENTS = 7           # days  — network_events
 _RETENTION_DAYS_PORT_ERRORS = 30     # days  — port_error_events
 _DB_SIZE_ALERT_MB = 400              # MB — threshold for Telegram alert
@@ -1614,11 +1615,12 @@ async def _cleanup_old_data(db: AsyncSession, *, emergency: bool = False) -> Non
     Delete rows older than retention limits from high-volume tables.
     Called every 30 minutes (and on-demand in emergency mode).
     """
-    metrics_hours = _RETENTION_HOURS_EMERGENCY if emergency else _RETENTION_HOURS_NORMAL
+    port_hours = _RETENTION_HOURS_EMERGENCY if emergency else _RETENTION_HOURS_PORT_METRICS
+    latency_hours = _RETENTION_HOURS_EMERGENCY if emergency else _RETENTION_HOURS_LATENCY
 
     tables: list[tuple[str, str]] = [
-        ("switch_port_metrics", f"time < NOW() - INTERVAL '{metrics_hours} hours'"),
-        ("latency_metrics",     f"time < NOW() - INTERVAL '{metrics_hours} hours'"),
+        ("switch_port_metrics", f"time < NOW() - INTERVAL '{port_hours} hours'"),
+        ("latency_metrics",     f"time < NOW() - INTERVAL '{latency_hours} hours'"),
         ("network_events",      f"created_at < NOW() - INTERVAL '{_RETENTION_DAYS_EVENTS} days'"),
         ("port_error_events",   f"time < NOW() - INTERVAL '{_RETENTION_DAYS_PORT_ERRORS} days'"),
     ]
