@@ -777,6 +777,10 @@ async def _check_wan_loss(db: AsyncSession) -> None:
             ORDER BY started_at DESC LIMIT 1
         """)
         if any_open:
+            logger.warning(
+                "WAN incident dedup: suppressed duplicate [%s] — open wan_issue incident %s already exists",
+                root_cause, any_open["id"],
+            )
             return  # Existing incident; don't create a second one
 
         if await _recently_resolved(db, "wan_issue"):
@@ -891,6 +895,10 @@ async def _check_interface_errors(db: AsyncSession) -> None:
 
         if await _get_open_incident(db, "interface_error",
                                     affected_switch=switch_id, affected_port=port_id):
+            logger.warning(
+                "interface_error dedup: suppressed duplicate for switch=%s port=%s — incident already open",
+                switch_id, port_id,
+            )
             continue
         if await _recently_resolved(db, "interface_error",
                                     affected_switch=switch_id, affected_port=port_id):
@@ -1008,6 +1016,10 @@ async def _check_devices_offline(db: AsyncSession) -> None:
             LIMIT 1
         """, {"ip": ip})
         if open_device_inc:
+            logger.warning(
+                "DEVICE_OFFLINE dedup: suppressed duplicate for %s (%s) — incident %s already open",
+                hostname, ip, open_device_inc["id"],
+            )
             await _exec(db, """
                 UPDATE network_incidents
                 SET evidence = jsonb_set(
@@ -1022,6 +1034,10 @@ async def _check_devices_offline(db: AsyncSession) -> None:
 
         # Fallback dedup for legacy incidents created before root_cause was added.
         if await _get_open_incident(db, "device_offline", affected_ip=ip):
+            logger.warning(
+                "DEVICE_OFFLINE dedup (legacy fallback): suppressed duplicate for %s (%s)",
+                hostname, ip,
+            )
             continue
         if await _recently_resolved(db, "device_offline", affected_ip=ip):
             continue
@@ -1252,6 +1268,10 @@ async def _check_internal_latency(db: AsyncSession) -> None:
                 return
             # Also check the old-style open_inc (same category, any scope).
             if open_inc:
+                logger.warning(
+                    "internal_latency dedup (legacy fallback): suppressed duplicate [%s] — incident %s already open",
+                    root_cause, open_inc["id"],
+                )
                 return
 
             if await _recently_resolved(db, "internal_latency"):
@@ -1263,6 +1283,10 @@ async def _check_internal_latency(db: AsyncSession) -> None:
             # Device-scoped incident: use the IP of the affected device.
             affected_ip = _ROOT_CAUSE_IP.get(root_cause)
             if open_inc:
+                logger.warning(
+                    "internal_latency dedup: suppressed duplicate [%s, ip=%s] — incident %s already open",
+                    root_cause, affected_ip, open_inc["id"],
+                )
                 return  # Already tracking this device incident
 
             if await _recently_resolved(db, "internal_latency", affected_ip=affected_ip):
