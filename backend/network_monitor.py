@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -541,6 +542,124 @@ async def _update_global_incident_targets(
         WHERE id = :id::uuid
     """, {"id": incident_id, "targets": json.dumps(sorted(affected_ips))})
     await db.commit()
+
+
+# ── WAN ping helpers ──────────────────────────────────────────────────────────
+
+# Matches fping summary lines:  1.1.1.1 : xmt/rcv/%loss = 3/3/0%, min/avg/max = 1.2/1.4/1.6
+_FPING_RE = re.compile(
+    r"^(\S+)\s*:\s*xmt/rcv/%loss\s*=\s*\d+/\d+/(\d+)%"
+    r"(?:.*min/avg/max\s*=\s*[\d.]+/([\d.]+)/)?"
+)
+
+
+async def _fping_once(ips: list[str]) -> dict[str, dict]:
+    """
+    Run fping -q -c 3 against *ips* (concurrently in one fping call).
+    Returns {ip: {"rtt_ms": float|None, "packet_loss_pct": float}}.
+    On any failure returns an empty dict so callers treat all IPs as 100% loss.
+    """
+    if not ips:
+        return {}
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "fping", "-q", "-c", "3", "-p", "200", "-t", "1000", *ips,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
+        output = stderr.decode()
+    except FileNotFoundError:
+        logger.error(
+            "fping not found — add 'RUN apt-get update && apt-get install -y fping' "
+            "to Dockerfile.backend so the Railway backend can ping WAN targets"
+        )
+        return {}
+    except asyncio.TimeoutError:
+        logger.warning("fping timed out for WAN targets %s", ips)
+        return {}
+    except Exception as exc:
+        logger.error("fping subprocess error: %s", exc)
+        return {}
+
+    results: dict[str, dict] = {}
+    for line in output.splitlines():
+        m = _FPING_RE.match(line.strip())
+        if not m:
+            continue
+        ip       = m.group(1)
+        loss_pct = float(m.group(2))
+        avg_rtt  = float(m.group(3)) if m.group(3) else None
+        results[ip] = {"rtt_ms": avg_rtt, "packet_loss_pct": loss_pct}
+    return results
+
+
+async def _ping_and_store_wan_targets(db: AsyncSession) -> None:
+    """
+    Step 0 (runs before all checks): ping WAN gateways and external DNS,
+    write results to latency_metrics with the correct target_type.
+
+    This is what feeds _check_wan_loss and _check_internal_latency — without
+    this function those checks would always find an empty latency_metrics for
+    WAN/external IPs.
+
+    target_type mapping:
+      WAN1_GATEWAY_IP / WAN2_GATEWAY_IP → 'wan'
+      1.1.1.1 / 8.8.8.8                → 'dns'
+    """
+    wan1       = settings.WAN1_GATEWAY_IP.strip()
+    wan2       = settings.WAN2_GATEWAY_IP.strip()
+    wan_legacy = settings.WAN_GATEWAY_IP.strip()
+
+    ip_type: dict[str, str] = {}   # ip → target_type enum value
+    ip_name: dict[str, str] = {}   # ip → human-readable target_name
+
+    if wan1:
+        ip_type[wan1] = "wan"
+        ip_name[wan1] = f"WAN1 Gateway ({wan1})"
+    if wan2:
+        ip_type[wan2] = "wan"
+        ip_name[wan2] = f"WAN2 Gateway ({wan2})"
+    if wan_legacy and not wan1 and not wan2:
+        ip_type[wan_legacy] = "wan"
+        ip_name[wan_legacy] = f"WAN Gateway ({wan_legacy})"
+    ip_type[_IP_DNS_CF]     = "dns"
+    ip_name[_IP_DNS_CF]     = "Cloudflare DNS (1.1.1.1)"
+    ip_type[_IP_DNS_GOOGLE] = "dns"
+    ip_name[_IP_DNS_GOOGLE] = "Google DNS (8.8.8.8)"
+
+    all_ips = list(ip_type.keys())
+    if not all_ips:
+        return
+
+    results = await _fping_once(all_ips)
+
+    now = datetime.now(timezone.utc)
+    for ip in all_ips:
+        stats = results.get(ip, {"rtt_ms": None, "packet_loss_pct": 100.0})
+        try:
+            await db.execute(text("""
+                INSERT INTO latency_metrics
+                    (time, target_name, target_ip, target_type, rtt_ms, packet_loss_pct)
+                VALUES
+                    (:time, :name, CAST(:ip AS INET),
+                     CAST(:ttype AS latency_target_type_enum),
+                     :rtt_ms, :loss)
+            """), {
+                "time":  now,
+                "name":  ip_name[ip],
+                "ip":    ip,
+                "ttype": ip_type[ip],
+                "rtt_ms": stats["rtt_ms"],
+                "loss":  stats["packet_loss_pct"],
+            })
+        except Exception as exc:
+            logger.error("Failed to store WAN ping result for %s: %s", ip, exc)
+    await db.commit()
+    logger.debug(
+        "WAN ping stored: %d targets, fping returned %d results",
+        len(all_ips), len(results),
+    )
 
 
 # ── Individual checks ─────────────────────────────────────────────────────────
@@ -1361,6 +1480,7 @@ async def _check_traffic_anomaly(db: AsyncSession) -> None:
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
 _CHECKS = [
+    _ping_and_store_wan_targets,   # must run first — writes WAN data that later checks read
     _check_wan_loss,
     _check_interface_errors,
     _check_devices_offline,
@@ -1376,22 +1496,32 @@ async def run_network_checks() -> None:
     Sleeps 60 seconds between cycles.  Each check runs in its own DB session
     so that a failure in one does not affect the others.
     """
-    wan1 = settings.WAN1_GATEWAY_IP.strip()
-    wan2 = settings.WAN2_GATEWAY_IP.strip()
+    wan1       = settings.WAN1_GATEWAY_IP.strip()
+    wan2       = settings.WAN2_GATEWAY_IP.strip()
     wan_legacy = settings.WAN_GATEWAY_IP.strip()
-    n_wan = bool(wan1) + bool(wan2) or (1 if (wan_legacy and not wan1 and not wan2) else 0)
+
+    wan_ips: list[str] = list(filter(None, [wan1, wan2]))
+    if not wan_ips and wan_legacy:
+        wan_ips = [wan_legacy]
+
+    # Full list of IPs this backend will ping each cycle
+    external_ping_targets = wan_ips + [_IP_DNS_CF, _IP_DNS_GOOGLE]
+
     logger.info(
-        "Network monitor starting — %d checks registered",
-        len(_LATENCY_TARGET_ROLES) + n_wan,
+        "Network monitor starting — %d checks registered (including WAN ping step)",
+        len(_CHECKS),
     )
     logger.info(
-        "Network monitor WAN targets — WAN1_GATEWAY_IP=%s  WAN2_GATEWAY_IP=%s  "
-        "WAN_GATEWAY_IP(legacy)=%s",
+        "WAN gateway IPs — WAN1_GATEWAY_IP=%s  WAN2_GATEWAY_IP=%s  WAN_GATEWAY_IP(legacy)=%s",
         wan1 or "(not set)",
         wan2 or "(not set)",
         wan_legacy or "(not set)",
     )
-    if not wan1 and not wan2 and not wan_legacy:
+    logger.info(
+        "External ping targets (written to latency_metrics each cycle): %s",
+        ", ".join(external_ping_targets) if external_ping_targets else "(none configured)",
+    )
+    if not wan_ips:
         logger.warning(
             "No WAN gateway IPs configured — WAN packet-loss check will not fire. "
             "Set WAN1_GATEWAY_IP and/or WAN2_GATEWAY_IP in Railway environment variables."
