@@ -551,12 +551,68 @@ async def _update_global_incident_targets(
 
 # ── WAN reachability helpers ───────────────────────────────────────────────────
 
+# Minimal DNS wire-format query: "." (root), type A, class IN, RD=1
+_DNS_QUERY_ROOT = bytes([
+    0x12, 0x34,  # Transaction ID
+    0x01, 0x00,  # Flags: RD=1, standard query
+    0x00, 0x01,  # QDCOUNT: 1 question
+    0x00, 0x00,  # ANCOUNT: 0
+    0x00, 0x00,  # NSCOUNT: 0
+    0x00, 0x00,  # ARCOUNT: 0
+    0x00,        # QNAME: root label (empty = ".")
+    0x00, 0x01,  # QTYPE: A
+    0x00, 0x01,  # QCLASS: IN
+])
+
+
+async def _udp_dns_query_rtt(ip: str) -> dict:
+    """
+    Measure reachability and RTT for a DNS server using a UDP DNS query.
+
+    Sends a minimal DNS query for "." (root) to port 53 UDP.
+    Any response within 2 s (even SERVFAIL/NXDOMAIN) means the host is up → 0% loss.
+    Timeout = host unreachable → 100% loss.
+
+    Never uses TCP; never counts a refused connection as loss.
+    """
+    import socket as _socket
+
+    loop = asyncio.get_event_loop()
+    t0 = loop.time()
+
+    def _query() -> bool:
+        sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+        sock.settimeout(2.0)
+        try:
+            sock.sendto(_DNS_QUERY_ROOT, (ip, 53))
+            sock.recv(512)
+            return True
+        except _socket.timeout:
+            return False
+        finally:
+            sock.close()
+
+    try:
+        got_response = await asyncio.wait_for(
+            loop.run_in_executor(None, _query),
+            timeout=3.0,
+        )
+        rtt_ms = (loop.time() - t0) * 1000
+        if got_response:
+            logger.debug("UDP DNS query succeeded for %s (rtt ~%.0f ms)", ip, rtt_ms)
+            return {"rtt_ms": round(rtt_ms, 2), "packet_loss_pct": 0.0}
+        logger.debug("UDP DNS query timed out for %s — host unreachable", ip)
+        return {"rtt_ms": None, "packet_loss_pct": 100.0}
+    except Exception as exc:
+        logger.debug("UDP DNS query error for %s: %s", ip, exc)
+        return {"rtt_ms": None, "packet_loss_pct": 100.0}
+
+
 async def _tcp_connect_rtt(ip: str) -> dict:
     """
-    Measure reachability and RTT for a single IP using TCP connect.
+    Measure reachability and RTT for a WAN gateway IP using TCP connect.
 
-    Tries ports 80, 443, 53, 22 in order.  No raw sockets — works without
-    CAP_NET_RAW.  If all TCP ports fail, falls back to ICMP ping.
+    Tries ports 443, 80, 53 in order.  No raw sockets — works without CAP_NET_RAW.
 
     Reachability rules:
       ConnectionRefusedError (TCP RST) on any port
@@ -564,18 +620,20 @@ async def _tcp_connect_rtt(ip: str) -> dict:
             A router/firewall that sends RST is provably up.
 
       asyncio.TimeoutError on a port
-          → no response within 3 s; try the next port.
-            If ALL ports time out → try ICMP ping fallback.
+          → no response within 2 s; try the next port.
 
       OSError (ENETUNREACH, EHOSTUNREACH, etc.)
           → local routing failure; try next port.
+
+    packet_loss_pct is 100 % only if ALL three ports time out.
+    Refused connections are never counted as loss.
     """
-    for port in (80, 443, 53, 22):
+    for port in (443, 80, 53):
         t0 = asyncio.get_event_loop().time()
         try:
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(ip, port),
-                timeout=3.0,
+                timeout=2.0,
             )
             rtt_ms = (asyncio.get_event_loop().time() - t0) * 1000
             writer.close()
@@ -587,6 +645,7 @@ async def _tcp_connect_rtt(ip: str) -> dict:
         except ConnectionRefusedError:
             # RST received — host is up, just no service on this port
             rtt_ms = (asyncio.get_event_loop().time() - t0) * 1000
+            logger.debug("TCP port %d refused (RST) for %s — host is up", port, ip)
             return {"rtt_ms": round(rtt_ms, 2), "packet_loss_pct": 0.0}
         except asyncio.TimeoutError:
             logger.debug("TCP port %d timeout for %s, trying next port", port, ip)
@@ -595,25 +654,7 @@ async def _tcp_connect_rtt(ip: str) -> dict:
             logger.debug("TCP port %d OSError for %s: %s", port, ip, exc)
             continue  # routing/network error — try next port
 
-    # All TCP ports timed out — try ICMP ping as last resort
-    logger.debug("All TCP ports (80,443,53,22) failed for %s, trying ICMP fallback", ip)
-    try:
-        t0 = asyncio.get_event_loop().time()
-        proc = await asyncio.create_subprocess_exec(
-            "ping", "-c", "1", "-W", "2", ip,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        await asyncio.wait_for(proc.wait(), timeout=5.0)
-        rtt_ms = (asyncio.get_event_loop().time() - t0) * 1000
-        if proc.returncode == 0:
-            logger.debug("ICMP ping succeeded for %s (rtt ~%.0f ms)", ip, rtt_ms)
-            return {"rtt_ms": round(rtt_ms, 2), "packet_loss_pct": 0.0}
-        logger.debug("ICMP ping returned non-zero exit for %s: rc=%d", ip, proc.returncode)
-    except (asyncio.TimeoutError, PermissionError, FileNotFoundError, OSError) as exc:
-        logger.debug("ICMP ping fallback failed for %s: %s", ip, exc)
-
-    logger.warning("All TCP ports and ICMP ping failed for %s — host unreachable", ip)
+    logger.warning("All TCP ports (443,80,53) timed out for %s — host unreachable", ip)
     return {"rtt_ms": None, "packet_loss_pct": 100.0}
 
 
@@ -622,8 +663,9 @@ async def _ping_and_store_wan_targets(db: AsyncSession) -> None:
     Step 0 (runs before all checks): probe WAN gateways and external DNS via
     TCP connect, write results to latency_metrics with the correct target_type.
 
-    Uses asyncio.open_connection() on port 443/80 — no raw sockets, no fping,
-    no CAP_NET_RAW capability required.
+    DNS targets (1.1.1.1, 8.8.8.8) use UDP DNS query to port 53.
+    WAN gateway IPs use TCP connect (ports 443→80→53).
+    No raw sockets, no fping, no CAP_NET_RAW capability required.
 
     This feeds _check_wan_loss and _check_internal_latency — without this
     function those checks would always find an empty latency_metrics for
@@ -668,9 +710,16 @@ async def _ping_and_store_wan_targets(db: AsyncSession) -> None:
         )
         return
 
-    # Probe all targets concurrently — each takes up to ~4 s (2×2 s port timeouts)
+    # Probe all targets concurrently — dispatch by type:
+    #   dns targets (1.1.1.1, 8.8.8.8) → UDP DNS query on port 53
+    #   wan targets (gateway IPs)       → TCP connect (443→80→53)
+    def _probe(ip: str):
+        if ip_type[ip] == "dns":
+            return _udp_dns_query_rtt(ip)
+        return _tcp_connect_rtt(ip)
+
     probe_results: list[dict] = await asyncio.gather(
-        *[_tcp_connect_rtt(ip) for ip in all_ips],
+        *[_probe(ip) for ip in all_ips],
         return_exceptions=False,
     )
     results: dict[str, dict] = dict(zip(all_ips, probe_results))
