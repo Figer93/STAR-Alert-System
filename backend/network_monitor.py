@@ -26,7 +26,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -544,63 +543,57 @@ async def _update_global_incident_targets(
     await db.commit()
 
 
-# ── WAN ping helpers ──────────────────────────────────────────────────────────
+# ── WAN reachability helpers ───────────────────────────────────────────────────
 
-# Matches fping summary lines:  1.1.1.1 : xmt/rcv/%loss = 3/3/0%, min/avg/max = 1.2/1.4/1.6
-_FPING_RE = re.compile(
-    r"^(\S+)\s*:\s*xmt/rcv/%loss\s*=\s*\d+/\d+/(\d+)%"
-    r"(?:.*min/avg/max\s*=\s*[\d.]+/([\d.]+)/)?"
-)
-
-
-async def _fping_once(ips: list[str]) -> dict[str, dict]:
+async def _tcp_connect_rtt(ip: str) -> dict:
     """
-    Run fping -q -c 3 against *ips* (concurrently in one fping call).
-    Returns {ip: {"rtt_ms": float|None, "packet_loss_pct": float}}.
-    On any failure returns an empty dict so callers treat all IPs as 100% loss.
-    """
-    if not ips:
-        return {}
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "fping", "-q", "-c", "3", "-p", "200", "-t", "1000", *ips,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
-        output = stderr.decode()
-    except FileNotFoundError:
-        logger.error(
-            "fping not found — add 'RUN apt-get update && apt-get install -y fping' "
-            "to Dockerfile.backend so the Railway backend can ping WAN targets"
-        )
-        return {}
-    except asyncio.TimeoutError:
-        logger.warning("fping timed out for WAN targets %s", ips)
-        return {}
-    except Exception as exc:
-        logger.error("fping subprocess error: %s", exc)
-        return {}
+    Measure reachability and RTT for a single IP using TCP connect.
 
-    results: dict[str, dict] = {}
-    for line in output.splitlines():
-        m = _FPING_RE.match(line.strip())
-        if not m:
-            continue
-        ip       = m.group(1)
-        loss_pct = float(m.group(2))
-        avg_rtt  = float(m.group(3)) if m.group(3) else None
-        results[ip] = {"rtt_ms": avg_rtt, "packet_loss_pct": loss_pct}
-    return results
+    Tries port 443 first (HTTPS), then port 80 (HTTP) as a fallback.
+    No raw sockets required — works in Railway containers without CAP_NET_RAW.
+
+    Reachability rules (mirrors ICMP semantics for our purposes):
+      - TCP SYN accepted (connection established) → reachable, rtt = connect time
+      - TCP RST received (ConnectionRefusedError)  → reachable, rtt = RST time
+        (the host is up and responding, just not running a server on that port)
+      - Timeout on both ports                      → 100% packet loss, rtt = None
+      - OS-level error (network unreachable, etc.) → 100% packet loss, rtt = None
+    """
+    for port in (443, 80):
+        t0 = asyncio.get_event_loop().time()
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(ip, port),
+                timeout=2.0,
+            )
+            rtt_ms = (asyncio.get_event_loop().time() - t0) * 1000
+            writer.close()
+            try:
+                await asyncio.wait_for(writer.wait_closed(), timeout=1.0)
+            except Exception:
+                pass
+            return {"rtt_ms": round(rtt_ms, 2), "packet_loss_pct": 0.0}
+        except ConnectionRefusedError:
+            # RST means the host is up — count the SYN→RST time as RTT
+            rtt_ms = (asyncio.get_event_loop().time() - t0) * 1000
+            return {"rtt_ms": round(rtt_ms, 2), "packet_loss_pct": 0.0}
+        except asyncio.TimeoutError:
+            continue  # try port 80 before declaring unreachable
+        except OSError:
+            continue  # network unreachable, no route, etc. — try next port
+    return {"rtt_ms": None, "packet_loss_pct": 100.0}
 
 
 async def _ping_and_store_wan_targets(db: AsyncSession) -> None:
     """
-    Step 0 (runs before all checks): ping WAN gateways and external DNS,
-    write results to latency_metrics with the correct target_type.
+    Step 0 (runs before all checks): probe WAN gateways and external DNS via
+    TCP connect, write results to latency_metrics with the correct target_type.
 
-    This is what feeds _check_wan_loss and _check_internal_latency — without
-    this function those checks would always find an empty latency_metrics for
+    Uses asyncio.open_connection() on port 443/80 — no raw sockets, no fping,
+    no CAP_NET_RAW capability required.
+
+    This feeds _check_wan_loss and _check_internal_latency — without this
+    function those checks would always find an empty latency_metrics for
     WAN/external IPs.
 
     target_type mapping:
@@ -632,12 +625,17 @@ async def _ping_and_store_wan_targets(db: AsyncSession) -> None:
     if not all_ips:
         return
 
-    results = await _fping_once(all_ips)
+    # Probe all targets concurrently — each takes up to ~4 s (2×2 s port timeouts)
+    probe_results: list[dict] = await asyncio.gather(
+        *[_tcp_connect_rtt(ip) for ip in all_ips],
+        return_exceptions=False,
+    )
+    results: dict[str, dict] = dict(zip(all_ips, probe_results))
 
     now = datetime.now(timezone.utc)
     stored = 0
     for ip in all_ips:
-        stats = results.get(ip, {"rtt_ms": None, "packet_loss_pct": 100.0})
+        stats = results[ip]
         try:
             await db.execute(text("""
                 INSERT INTO latency_metrics
@@ -654,12 +652,17 @@ async def _ping_and_store_wan_targets(db: AsyncSession) -> None:
             })
             stored += 1
         except Exception as exc:
-            logger.error("Failed to store WAN ping result for %s: %s", ip, exc)
+            logger.error("Failed to store WAN probe result for %s: %s", ip, exc)
             await db.rollback()
     await db.commit()
     logger.info(
-        "WAN ping cycle complete: %d/%d targets stored (fping returned %d results)",
-        stored, len(all_ips), len(results),
+        "WAN probe cycle complete: %d/%d targets stored "
+        "(loss=[%s])",
+        stored, len(all_ips),
+        ", ".join(
+            f"{ip}:{results[ip]['packet_loss_pct']:.0f}%"
+            for ip in all_ips
+        ),
     )
 
 
