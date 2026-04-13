@@ -990,9 +990,13 @@ function IncidentsPanel({ deviceIncidents }: { deviceIncidents: IncidentRecord[]
 
 // ── Raw Port Metrics Panel ────────────────────────────────────────────────────
 
-function RawPortMetricsPanel({ metrics }: { metrics: InvestigateMetrics }) {
+function RawPortMetricsPanel({ metrics, switchId }: { metrics: InvestigateMetrics; switchId: string | null | undefined }) {
   const [open, setOpen] = useState(false)
   const rows = metrics.raw_port_metrics ?? []
+
+  const emptyMessage = !switchId
+    ? 'This device is not connected to a monitored switch port'
+    : 'No port data in selected time window'
 
   return (
     <div className="card" style={{ padding: 0 }}>
@@ -1014,7 +1018,7 @@ function RawPortMetricsPanel({ metrics }: { metrics: InvestigateMetrics }) {
         <div style={{ overflow: 'auto' }}>
           {rows.length === 0 ? (
             <p style={{ padding: '16px 20px', color: 'var(--text-dim)', fontSize: 12, margin: 0, fontStyle: 'italic' }}>
-              No port metrics rows for this device
+              {emptyMessage}
             </p>
           ) : (
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
@@ -1495,7 +1499,7 @@ ${tl.length === 0 ? '<p>No events in selected period.</p>' : `
           )}
           <FlowsPanel            ip={selectedIp} flows={flows} />
           <IncidentsPanel        deviceIncidents={invData.device_incidents} />
-          <RawPortMetricsPanel   metrics={invData.metrics} />
+          <RawPortMetricsPanel   metrics={invData.metrics} switchId={(invData.device?.switch_id as string | null) ?? devDetail?.switch_id} />
         </>
       )}
     </div>

@@ -1478,7 +1478,8 @@ async def investigate(
                COALESCE(SUM(rx_dropped),      0) AS rx_dropped,
                COALESCE(SUM(tx_dropped),      0) AS tx_dropped,
                COALESCE(SUM(rx_frags),        0) AS rx_frags,
-               COALESCE(SUM(rx_bytes_delta),  0) AS rx_bytes
+               COALESCE(SUM(rx_bytes_delta),  0) AS rx_bytes,
+               COALESCE(SUM(tx_bytes_delta),  0) AS tx_bytes
         FROM switch_port_metrics
         WHERE device_ip::text = :ip
           AND time BETWEEN :start AND :end
@@ -1489,6 +1490,7 @@ async def investigate(
     port_tx_dropped = int((port_err_rows[0] or {}).get("tx_dropped") or 0)
     port_rx_frags   = int((port_err_rows[0] or {}).get("rx_frags")   or 0)
     port_rx_bytes   = int((port_err_rows[0] or {}).get("rx_bytes")   or 0)
+    port_tx_bytes   = int((port_err_rows[0] or {}).get("tx_bytes")   or 0)
     has_wired_port  = bool(port_err_rows and port_err_rows[0].get("rx_errors") is not None)
 
     # Error rate calculation
@@ -1599,12 +1601,12 @@ async def investigate(
         for r in raw_metrics_rows
     ]
 
-    # Gateway latency in window
+    # Gateway latency in window (includes WAN/DNS targets for full picture)
     gw_rows = await _exec(db, """
         SELECT AVG(packet_loss_pct) AS avg_loss,
                AVG(rtt_ms)          AS avg_rtt
         FROM latency_metrics
-        WHERE target_type = 'gateway'
+        WHERE target_type IN ('gateway', 'wan', 'dns')
           AND time BETWEEN :start AND :end
     """, params)
     gateway_loss = float((gw_rows[0] or {}).get("avg_loss") or 0)
@@ -1619,18 +1621,10 @@ async def investigate(
     """, params)
     wan_loss = float((wan_rows[0] or {}).get("avg_loss") or 0)
 
-    # Flow metrics in window
-    flow_rows = await _exec(db, """
-        SELECT
-            COALESCE(SUM(CASE WHEN src_ip::text = :ip THEN bytes ELSE 0 END), 0) AS bytes_sent,
-            COALESCE(SUM(CASE WHEN dst_ip::text = :ip THEN bytes ELSE 0 END), 0) AS bytes_received,
-            COALESCE(SUM(bytes), 0) AS total_bytes
-        FROM network_flows
-        WHERE (src_ip::text = :ip OR dst_ip::text = :ip)
-          AND time BETWEEN :start AND :end
-    """, params)
-    bytes_sent     = int((flow_rows[0] or {}).get("bytes_sent")     or 0)
-    bytes_received = int((flow_rows[0] or {}).get("bytes_received") or 0)
+    # Bytes sent/received from switch_port_metrics delta columns (authoritative)
+    # port_tx_bytes_delta = bytes leaving the device; port_rx_bytes_delta = bytes arriving
+    bytes_sent     = port_tx_bytes
+    bytes_received = port_rx_bytes
 
     # Top destinations
     top_dest = await _exec(db, """
