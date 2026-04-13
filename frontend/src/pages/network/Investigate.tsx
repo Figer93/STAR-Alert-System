@@ -128,8 +128,9 @@ interface DeviceDetail {
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const CAUSE_LABELS: Record<string, string> = {
-  cable_or_nic:  'Cable or NIC Issue',
-  wan_issue:     'WAN / ISP Issue',
+  cable_or_nic:         'Cable or NIC Issue',
+  wan_issue:            'WAN / ISP Issue',
+  global_wan_incident:  'No device-specific issues — global WAN outage active',
   firewall_drop: 'Firewall Blocking Traffic',
   server_side:   'Remote Server Issue',
   wifi_signal:   'Weak WiFi Signal',
@@ -184,7 +185,7 @@ function resolveProto(protocol: number | null, dstPort: number | null): string {
 }
 
 function diagnosisColor(cause: string, conf: string): string {
-  if (cause === 'healthy') return '#22c55e'
+  if (cause === 'healthy' || cause === 'global_wan_incident') return '#22c55e'
   if (cause === 'unknown') return '#6b7280'
   return conf === 'high' ? '#ef4444' : '#eab308'
 }
@@ -616,11 +617,14 @@ function DiagnosisPanel({ hypothesis, metrics, globalIncidents }: {
   metrics:         InvestigateMetrics
   globalIncidents: GlobalIncident[]
 }) {
-  // If the backend's hypothesis is wan_issue but there are active global incidents,
-  // the WAN problem is global — not device-specific. Show clean device diagnosis.
-  const isWanCausedByGlobal = hypothesis.likely_cause === 'wan_issue' && globalIncidents.length > 0
-  const effectiveCause      = isWanCausedByGlobal ? 'healthy' : hypothesis.likely_cause
-  const effectiveLabel      = isWanCausedByGlobal ? 'No Device-Specific Issues Found' : (CAUSE_LABELS[hypothesis.likely_cause] ?? hypothesis.likely_cause)
+  // Backend sets likely_cause='global_wan_incident' when WAN loss coincides with an
+  // active global incident. Also handle the legacy frontend-only path as a fallback.
+  const isWanCausedByGlobal = hypothesis.likely_cause === 'global_wan_incident'
+    || (hypothesis.likely_cause === 'wan_issue' && globalIncidents.length > 0)
+  const effectiveCause      = isWanCausedByGlobal ? 'global_wan_incident' : hypothesis.likely_cause
+  const effectiveLabel      = isWanCausedByGlobal
+    ? 'No device-specific issues — global WAN outage active'
+    : (CAUSE_LABELS[hypothesis.likely_cause] ?? hypothesis.likely_cause)
 
   const color   = diagnosisColor(effectiveCause, hypothesis.confidence)
   const confBg  = { high: '#ef444422', medium: '#eab30822', low: '#6b728022' }[hypothesis.confidence]
@@ -669,8 +673,8 @@ function DiagnosisPanel({ hypothesis, metrics, globalIncidents }: {
 
           {hypothesis.recommended_action && (
             <div style={{
-              background:   effectiveCause === 'healthy' ? '#22c55e0d' : '#eab3080d',
-              border:       `1px solid ${effectiveCause === 'healthy' ? '#22c55e33' : '#eab30833'}`,
+              background:   (effectiveCause === 'healthy' || effectiveCause === 'global_wan_incident') ? '#22c55e0d' : '#eab3080d',
+              border:       `1px solid ${(effectiveCause === 'healthy' || effectiveCause === 'global_wan_incident') ? '#22c55e33' : '#eab30833'}`,
               borderRadius: 'var(--radius)', padding: '10px 14px',
             }}>
               <p style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-dim)', margin: '0 0 5px' }}>

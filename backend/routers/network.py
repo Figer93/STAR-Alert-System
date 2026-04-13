@@ -1792,6 +1792,41 @@ async def investigate(
         for r in top_dest
     ]
 
+    hypothesis = _compute_hypothesis(
+        port_rx_errors=port_rx_errors,
+        port_tx_errors=port_tx_errors,
+        error_rate_pct=error_rate_pct,
+        error_timeline=error_timeline,
+        peer_comparison=peer_comparison_result,
+        port_rx_dropped=port_rx_dropped,
+        port_rx_frags=port_rx_frags,
+        gateway_loss=gateway_loss,
+        wan_loss=wan_loss,
+        has_wired_port=has_wired_port,
+        has_collab_traffic=has_collab,
+    )
+
+    # If the device's WAN diagnosis coincides with an active global incident,
+    # the connectivity issue is infrastructure-wide — not device-specific.
+    # Override likely_cause so the frontend can render the correct message
+    # without needing to re-implement this logic client-side.
+    if hypothesis.likely_cause == "wan_issue" and global_inc_rows:
+        active = global_inc_rows[0]
+        hypothesis = Hypothesis(
+            likely_cause="global_wan_incident",
+            confidence="high",
+            evidence=[
+                "WAN/ISP packet loss detected during this window.",
+                f"Active global incident: {active.get('title', 'WAN outage')} "
+                f"(started {active.get('started_at', 'unknown')})",
+                "The connectivity issue is network-wide — not caused by this device.",
+            ],
+            recommended_action=(
+                "No device-specific action required. "
+                "Monitor the global incident for resolution."
+            ),
+        )
+
     return InvestigateResponse(
         device=device,
         timeline=timeline,
@@ -1814,19 +1849,7 @@ async def investigate(
             top_destinations=top_dest_fmt,
             raw_port_metrics=raw_port_metrics,
         ),
-        hypothesis=_compute_hypothesis(
-            port_rx_errors=port_rx_errors,
-            port_tx_errors=port_tx_errors,
-            error_rate_pct=error_rate_pct,
-            error_timeline=error_timeline,
-            peer_comparison=peer_comparison_result,
-            port_rx_dropped=port_rx_dropped,
-            port_rx_frags=port_rx_frags,
-            gateway_loss=gateway_loss,
-            wan_loss=wan_loss,
-            has_wired_port=has_wired_port,
-            has_collab_traffic=has_collab,
-        ),
+        hypothesis=hypothesis,
         global_incidents=global_incidents,
         device_incidents=device_incidents,
     )
