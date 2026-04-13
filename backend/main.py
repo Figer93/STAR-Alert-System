@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.config import settings
 from backend.database import init_db
-from backend.network_monitor import run_network_checks
+from backend.network_monitor import run_network_checks, run_maintenance_loop
 from backend.routers import alerts, collector, ingest, maintenance, network, notifications, notification_settings, rules, sources, stats, ws
 from backend.websocket_manager import ws_manager
 
@@ -303,6 +303,7 @@ async def lifespan(app: FastAPI):
     broadcast_task   = asyncio.create_task(_stats_broadcaster())
     offline_task     = asyncio.create_task(_source_offline_checker())
     network_task     = asyncio.create_task(run_network_checks())
+    maintenance_task = asyncio.create_task(run_maintenance_loop())
     retention_task   = asyncio.create_task(_retention_cleanup())
 
     # UniFi polling loop (no-op if no UniFi sources are configured)
@@ -318,6 +319,7 @@ async def lifespan(app: FastAPI):
     broadcast_task.cancel()
     offline_task.cancel()
     network_task.cancel()
+    maintenance_task.cancel()
     retention_task.cancel()
     if unifi_task:
         unifi_task.cancel()

@@ -111,7 +111,11 @@ def _cleanup(conn: sqlite3.Connection) -> None:
                 LIMIT ?
             )
         """, (excess,))
-        log.warning("Buffer overflow: dropped %d oldest rows (limit=%d)", excess, _MAX_ROWS)
+        log.error(
+            "Buffer overflow — collector may be disconnected from backend "
+            "(dropped %d oldest rows, limit=%d)",
+            excess, _MAX_ROWS,
+        )
 
     conn.commit()
 

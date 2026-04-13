@@ -1550,6 +1550,94 @@ async def _check_traffic_anomaly(db: AsyncSession) -> None:
         logger.warning("Traffic anomaly opened for %s: %.1f× normal", hostname, ratio)
 
 
+# ── Maintenance: cleanup + DB size ────────────────────────────────────────────
+
+_RETENTION_HOURS_NORMAL = 3          # hours — switch_port_metrics, latency_metrics
+_RETENTION_HOURS_EMERGENCY = 1       # hours — used when DB > 400 MB
+_RETENTION_DAYS_EVENTS = 7           # days  — network_events
+_RETENTION_DAYS_PORT_ERRORS = 30     # days  — port_error_events
+_DB_SIZE_ALERT_MB = 400              # MB — threshold for Telegram alert
+_DB_SIZE_LIMIT_MB = 500              # MB — shown in alert message
+
+
+async def _cleanup_old_data(db: AsyncSession, *, emergency: bool = False) -> None:
+    """
+    Delete rows older than retention limits from high-volume tables.
+    Called every 30 minutes (and on-demand in emergency mode).
+    """
+    metrics_hours = _RETENTION_HOURS_EMERGENCY if emergency else _RETENTION_HOURS_NORMAL
+
+    tables: list[tuple[str, str]] = [
+        ("switch_port_metrics", f"time < NOW() - INTERVAL '{metrics_hours} hours'"),
+        ("latency_metrics",     f"time < NOW() - INTERVAL '{metrics_hours} hours'"),
+        ("network_events",      f"created_at < NOW() - INTERVAL '{_RETENTION_DAYS_EVENTS} days'"),
+        ("port_error_events",   f"time < NOW() - INTERVAL '{_RETENTION_DAYS_PORT_ERRORS} days'"),
+    ]
+
+    total_deleted = 0
+    for table, condition in tables:
+        result = await db.execute(text(f"DELETE FROM {table} WHERE {condition}"))
+        deleted = result.rowcount
+        total_deleted += deleted
+        if deleted:
+            logger.info("Cleanup: deleted %d rows from %s", deleted, table)
+
+    # Log current row counts for key tables
+    counts: dict[str, int] = {}
+    for table, _ in tables:
+        row = await db.execute(text(f"SELECT COUNT(*) FROM {table}"))
+        counts[table] = row.scalar() or 0
+
+    await db.commit()
+    logger.info(
+        "Cleanup complete — %d rows deleted total%s | counts: %s",
+        total_deleted,
+        " (EMERGENCY mode)" if emergency else "",
+        ", ".join(f"{t}={c}" for t, c in counts.items()),
+    )
+
+
+async def _check_db_size(db: AsyncSession) -> None:
+    """
+    Check DB size every 30 minutes.  If > 400 MB send a Telegram alert and
+    run emergency cleanup (1-hour retention on metrics tables).
+    """
+    result = await db.execute(text("SELECT pg_database_size(current_database())"))
+    size_bytes: int = result.scalar() or 0
+    size_mb = size_bytes / (1024 * 1024)
+
+    logger.info("DB size check: %.1f MB", size_mb)
+
+    if size_mb > _DB_SIZE_ALERT_MB:
+        msg = (
+            f"⚠️ STAR Alert DB size critical: {size_mb:.0f}MB / {_DB_SIZE_LIMIT_MB}MB limit. "
+            f"Running emergency cleanup."
+        )
+        logger.warning(msg)
+        await _send_telegram(msg)
+        await _cleanup_old_data(db, emergency=True)
+
+
+async def run_maintenance_loop() -> None:
+    """
+    Entry point: started as an asyncio background task in main.py lifespan.
+    Runs _cleanup_old_data and _check_db_size every 30 minutes.
+    """
+    logger.info("Maintenance loop starting — cleanup + DB size check every 30 minutes")
+    while True:
+        await asyncio.sleep(1800)  # 30 minutes
+
+        if not _IS_POSTGRES:
+            continue
+
+        for task in (_check_db_size, _cleanup_old_data):
+            try:
+                async with AsyncSessionLocal() as db:
+                    await task(db)
+            except Exception:
+                logger.exception("Maintenance task %s failed", task.__name__)
+
+
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
 _CHECKS = [
