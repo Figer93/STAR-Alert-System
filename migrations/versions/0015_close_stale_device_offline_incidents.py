@@ -29,8 +29,8 @@ def upgrade() -> None:
                resolution_notes  = 'Auto-closed: stale incident from collector outage'
          WHERE resolved_at IS NULL
            AND root_cause = 'DEVICE_OFFLINE'
-           AND created_at < '2026-04-13 00:00:00+00'
-           AND created_at < NOW() - INTERVAL '24 hours'
+           AND started_at < '2026-04-13 00:00:00+00'
+           AND started_at < NOW() - INTERVAL '24 hours'
     """))
 
 
