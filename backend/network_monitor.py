@@ -119,11 +119,6 @@ _global_latency_recover_consecutive: int          = 0   # consecutive cycles whe
 _wan_loss_consecutive: dict[str, int] = {}  # ip → consecutive cycles >50% loss
 _wan_loss_recover:     dict[str, int] = {}  # ip → consecutive cycles ≤50% loss
 
-# Startup grace period: skip writing WAN probe results for the first N cycles
-# so that process-start latency / route-table convergence doesn't create
-# spurious 100%-loss rows that immediately trigger false-positive incidents.
-_WAN_PROBE_GRACE_CYCLES = 2
-_wan_probe_cycle:        int = 0   # incremented at the top of each probe call
 
 # ── Telegram rate limiting ────────────────────────────────────────────────────
 # Per-device cooldown: at most 1 new-incident alert per (category, entity) per hour.
@@ -698,16 +693,6 @@ async def _ping_and_store_wan_targets(db: AsyncSession) -> None:
 
     all_ips = list(ip_type.keys())
     if not all_ips:
-        return
-
-    global _wan_probe_cycle
-    _wan_probe_cycle += 1
-    if _wan_probe_cycle <= _WAN_PROBE_GRACE_CYCLES:
-        logger.info(
-            "WAN probe grace period: skipping cycle %d/%d to avoid "
-            "startup false-positives",
-            _wan_probe_cycle, _WAN_PROBE_GRACE_CYCLES,
-        )
         return
 
     # Probe all targets concurrently — dispatch by type:
@@ -1602,10 +1587,10 @@ async def _check_traffic_anomaly(db: AsyncSession) -> None:
 # ── Maintenance: cleanup + DB size ────────────────────────────────────────────
 
 _RETENTION_HOURS_PORT_METRICS = 12   # hours — switch_port_metrics
-_RETENTION_HOURS_LATENCY = 24        # hours — latency_metrics
+_RETENTION_HOURS_LATENCY = 168       # hours — latency_metrics (7 days for graph history)
 _RETENTION_HOURS_EMERGENCY = 1       # hours — both metrics tables when DB > 400 MB
-_RETENTION_DAYS_EVENTS = 7           # days  — network_events
-_RETENTION_DAYS_PORT_ERRORS = 30     # days  — port_error_events
+_RETENTION_DAYS_EVENTS = 90          # days  — network_events (timeline history)
+_RETENTION_DAYS_PORT_ERRORS = 90     # days  — port_error_events
 _DB_SIZE_ALERT_MB = 400              # MB — threshold for Telegram alert
 _DB_SIZE_LIMIT_MB = 500              # MB — shown in alert message
 
