@@ -119,6 +119,12 @@ _global_latency_recover_consecutive: int          = 0   # consecutive cycles whe
 _wan_loss_consecutive: dict[str, int] = {}  # ip → consecutive cycles >50% loss
 _wan_loss_recover:     dict[str, int] = {}  # ip → consecutive cycles ≤50% loss
 
+# Startup grace period: skip writing WAN probe results for the first N cycles
+# so that process-start latency / route-table convergence doesn't create
+# spurious 100%-loss rows that immediately trigger false-positive incidents.
+_WAN_PROBE_GRACE_CYCLES = 2
+_wan_probe_cycle:        int = 0   # incremented at the top of each probe call
+
 # ── Telegram rate limiting ────────────────────────────────────────────────────
 # Per-device cooldown: at most 1 new-incident alert per (category, entity) per hour.
 # Hourly cap: at most 10 total new-incident alerts per hour across all categories.
@@ -549,17 +555,23 @@ async def _tcp_connect_rtt(ip: str) -> dict:
     """
     Measure reachability and RTT for a single IP using TCP connect.
 
-    Tries port 443 first (HTTPS), then port 80 (HTTP) as a fallback.
-    No raw sockets required — works in Railway containers without CAP_NET_RAW.
+    Tries port 80 first (more likely to be open or at least refused on routers),
+    then port 443 as a fallback.  No raw sockets — works without CAP_NET_RAW.
 
-    Reachability rules (mirrors ICMP semantics for our purposes):
-      - TCP SYN accepted (connection established) → reachable, rtt = connect time
-      - TCP RST received (ConnectionRefusedError)  → reachable, rtt = RST time
-        (the host is up and responding, just not running a server on that port)
-      - Timeout on both ports                      → 100% packet loss, rtt = None
-      - OS-level error (network unreachable, etc.) → 100% packet loss, rtt = None
+    Reachability rules:
+      ConnectionRefusedError (TCP RST) on any port
+          → reachable, rtt = SYN→RST time, packet_loss = 0 %
+            A router/firewall that sends RST is provably up.
+
+      asyncio.TimeoutError on a port
+          → no response within 2 s; try the next port.
+            If BOTH ports time out → 100 % packet loss, rtt = None.
+
+      OSError (ENETUNREACH, EHOSTUNREACH, etc.)
+          → local routing failure; try next port.
+            Both failing this way also → 100 % packet loss.
     """
-    for port in (443, 80):
+    for port in (80, 443):
         t0 = asyncio.get_event_loop().time()
         try:
             reader, writer = await asyncio.wait_for(
@@ -574,13 +586,13 @@ async def _tcp_connect_rtt(ip: str) -> dict:
                 pass
             return {"rtt_ms": round(rtt_ms, 2), "packet_loss_pct": 0.0}
         except ConnectionRefusedError:
-            # RST means the host is up — count the SYN→RST time as RTT
+            # RST received — host is up, just no service on this port
             rtt_ms = (asyncio.get_event_loop().time() - t0) * 1000
             return {"rtt_ms": round(rtt_ms, 2), "packet_loss_pct": 0.0}
         except asyncio.TimeoutError:
-            continue  # try port 80 before declaring unreachable
+            continue  # no response — try the other port
         except OSError:
-            continue  # network unreachable, no route, etc. — try next port
+            continue  # routing/network error — try the other port
     return {"rtt_ms": None, "packet_loss_pct": 100.0}
 
 
@@ -623,6 +635,16 @@ async def _ping_and_store_wan_targets(db: AsyncSession) -> None:
 
     all_ips = list(ip_type.keys())
     if not all_ips:
+        return
+
+    global _wan_probe_cycle
+    _wan_probe_cycle += 1
+    if _wan_probe_cycle <= _WAN_PROBE_GRACE_CYCLES:
+        logger.info(
+            "WAN probe grace period: skipping cycle %d/%d to avoid "
+            "startup false-positives",
+            _wan_probe_cycle, _WAN_PROBE_GRACE_CYCLES,
+        )
         return
 
     # Probe all targets concurrently — each takes up to ~4 s (2×2 s port timeouts)
