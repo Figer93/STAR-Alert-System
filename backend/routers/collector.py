@@ -346,6 +346,8 @@ async def ingest_devices(
     accepted = 0
 
     for row in payload.rows:
+        if str(row.get("ip") or "").startswith("169.254."):
+            continue
         try:
             await db.execute(
                 text("""

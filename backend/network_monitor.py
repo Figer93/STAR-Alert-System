@@ -970,6 +970,8 @@ async def _check_devices_offline(db: AsyncSession) -> None:
 
     for device in stale:
         ip          = device["ip"]
+        if ip.startswith("169.254."):
+            continue
         hostname    = device.get("hostname") or ip
         device_type = device.get("device_type") or "unknown"
         is_critical = bool(device.get("is_critical"))

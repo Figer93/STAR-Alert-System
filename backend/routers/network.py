@@ -1249,6 +1249,7 @@ async def list_devices(db: AsyncSession = Depends(get_db)):
             d.port_id, d.last_seen, d.first_seen, d.is_online,
             d.device_type, d.notes
         FROM device_registry d
+        WHERE NOT (d.ip::text LIKE '169.254.%')
         ORDER BY d.last_seen DESC NULLS LAST
     """)
     return [
