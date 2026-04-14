@@ -24,16 +24,6 @@ function localToUtcIso(localDt: string): string {
   return new Date(localDt).toISOString()
 }
 
-/** Convert ISO UTC string to datetime-local input value (local time). */
-function utcIsoToLocal(iso: string): string {
-  if (!iso) return ''
-  const d = new Date(iso)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return (
-    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
-    `T${pad(d.getHours())}:${pad(d.getMinutes())}`
-  )
-}
 
 function WindowStatusBadge({ window: w }: { window: MaintenanceWindow }) {
   const now = Date.now()
