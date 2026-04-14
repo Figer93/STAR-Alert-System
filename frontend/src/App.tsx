@@ -22,6 +22,7 @@ const NetworkDevices     = lazy(() => import('./pages/network/Devices'))
 const NetworkSettings    = lazy(() => import('./pages/network/NetworkSettings'))
 const NetworkIncidents   = lazy(() => import('./pages/network/Incidents'))
 const SystemHealth       = lazy(() => import('./pages/system/SystemHealth'))
+const SystemMaintenance  = lazy(() => import('./pages/system/SystemMaintenance'))
 
 // ── Keyboard shortcuts (G+key navigation) ────────────────────────────────────
 function KeyboardShortcuts() {
@@ -93,6 +94,7 @@ function AnimatedRoutes() {
         <Route path="/network/incidents"   element={<RouteMotion><NetworkIncidents /></RouteMotion>} />
         <Route path="/network/settings"    element={<RouteMotion><NetworkSettings /></RouteMotion>} />
         <Route path="/system/health"       element={<RouteMotion><SystemHealth /></RouteMotion>} />
+        <Route path="/system/maintenance"  element={<RouteMotion><SystemMaintenance /></RouteMotion>} />
       </Routes>
     </AnimatePresence>
   )

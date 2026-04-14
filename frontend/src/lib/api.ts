@@ -112,6 +112,32 @@ export const startMaintenance = (minutes: number) =>
 export const stopMaintenance = () =>
   api.post<MaintenanceStatus>('/maintenance/stop').then(r => r.data)
 
+// ── Maintenance Windows ───────────────────────────────────────────────────────
+
+export interface MaintenanceWindow {
+  id: string
+  name: string
+  starts_at: string
+  ends_at: string
+  created_at: string
+  is_active: boolean
+}
+
+export interface MaintenanceWindowCreate {
+  name: string
+  starts_at: string   // ISO 8601
+  ends_at: string     // ISO 8601
+}
+
+export const getMaintenanceWindows = () =>
+  api.get<MaintenanceWindow[]>('/maintenance').then(r => r.data)
+
+export const createMaintenanceWindow = (data: MaintenanceWindowCreate) =>
+  api.post<MaintenanceWindow>('/maintenance', data).then(r => r.data)
+
+export const deleteMaintenanceWindow = (id: string) =>
+  api.delete(`/maintenance/${id}`)
+
 // ── Notification Channel Settings ─────────────────────────────────────────────
 
 export interface NotificationChannelSettings {

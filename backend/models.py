@@ -92,6 +92,16 @@ class NotificationLog(Base):
     alert: Mapped["Alert"] = relationship("Alert", back_populates="notification_logs")
 
 
+class MaintenanceWindow(Base):
+    __tablename__ = "maintenance_windows"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    name: Mapped[str] = mapped_column(Text)
+    starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class NotificationChannelSettings(Base):
     """
     Per-channel notification configuration (one row per channel).

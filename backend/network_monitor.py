@@ -157,18 +157,25 @@ async def _send_telegram(message: str) -> None:
         logger.error("Network monitor Telegram send failed: %s", exc)
 
 
-async def _rate_limited_telegram(message: str, dedup_key: str) -> None:
+async def _rate_limited_telegram(message: str, dedup_key: str, db: AsyncSession | None = None) -> None:
     """
     Rate-limited Telegram send for NEW incident alerts.
 
     Rules (all applied before sending):
-    1. Per-entity cooldown: if the same dedup_key was sent within the last hour, suppress.
-    2. Hourly cap: if >= 10 new-incident alerts have been sent in the last 60 minutes,
+    1. Active maintenance window: if a scheduled window is active, suppress silently.
+    2. Per-entity cooldown: if the same dedup_key was sent within the last hour, suppress.
+    3. Hourly cap: if >= 10 new-incident alerts have been sent in the last 60 minutes,
        suppress and count. The suppressed count is prepended to the next message that
        actually gets through.
 
     dedup_key should be "{category}:{affected_ip}" or "{category}" for network-wide alerts.
     """
+    if db is not None:
+        maint = await _active_maintenance_window(db)
+        if maint:
+            logger.info("[maintenance] alert suppressed — window: %s", maint)
+            return
+
     global _tg_suppressed, _tg_hour_log, _tg_sent_keys
 
     now    = datetime.now(timezone.utc)
@@ -241,6 +248,17 @@ async def _exec_one(
 ) -> dict | None:
     rows = await _exec(db, sql, params)
     return rows[0] if rows else None
+
+
+# ── Maintenance window check ──────────────────────────────────────────────────
+
+async def _active_maintenance_window(db: AsyncSession) -> str | None:
+    """Return the name of the currently active maintenance window, or None."""
+    rows = await _exec(db,
+        "SELECT name FROM maintenance_windows "
+        "WHERE starts_at <= NOW() AND ends_at >= NOW() "
+        "LIMIT 1")
+    return rows[0]["name"] if rows else None
 
 
 # ── Network event helper ──────────────────────────────────────────────────────
@@ -394,6 +412,11 @@ async def _create_incident(
     NULL/INET casting is handled by conditional SQL fragments so that
     asyncpg never receives a typed None where a cast is specified.
     """
+    maint = await _active_maintenance_window(db)
+    if maint:
+        logger.info("[maintenance] incident suppressed — window: %s", maint)
+        return None
+
     ip_sql = "CAST(:affected_ip AS INET)" if affected_ip else "NULL"
     ev_sql = "CAST(:evidence AS JSONB)"   if evidence   else "NULL"
     ac_sql = ":affected_component"        if affected_component else "NULL"
@@ -867,7 +890,7 @@ async def _check_wan_loss(db: AsyncSession) -> None:
         msg  = f"🔴 WAN outage [{root_cause}]: {rc_label}. Affected: {', '.join(affected_list)}"
         if link:
             msg += f"\n{link}"
-        await _rate_limited_telegram(msg, dedup_key=f"wan_issue:{root_cause}")
+        await _rate_limited_telegram(msg, dedup_key=f"wan_issue:{root_cause}", db=db)
         logger.warning("WAN outage incident opened [%s]: %s", root_cause, ", ".join(affected_list))
 
     else:
@@ -1008,7 +1031,7 @@ async def _check_interface_errors(db: AsyncSession) -> None:
         if link:
             msg += f"\n{link}"
         await _rate_limited_telegram(
-            msg, dedup_key=f"interface_error:{device_ip or switch_id+':'+str(port_id)}"
+            msg, dedup_key=f"interface_error:{device_ip or switch_id+':'+str(port_id)}", db=db
         )
         logger.warning("Interface error incident opened: %s / %s", switch_id, port_id)
 
@@ -1155,7 +1178,7 @@ async def _check_devices_offline(db: AsyncSession) -> None:
         msg = f"📴 {hostname} ({ip}) [{device_type}] went offline."
         if link:
             msg += f"\n{link}"
-        await _rate_limited_telegram(msg, dedup_key=f"device_offline:{ip}")
+        await _rate_limited_telegram(msg, dedup_key=f"device_offline:{ip}", db=db)
         logger.warning("Device offline (alert sent): %s (%s) [%s]", hostname, ip, device_type)
 
     # Reset consecutive counters for any device that is no longer stale
@@ -1447,7 +1470,7 @@ async def _check_internal_latency(db: AsyncSession) -> None:
             msg += f"\n{link}"
 
         dedup_key = f"internal_latency:{root_cause}" if is_global else f"internal_latency:{affected_ip or root_cause}"
-        await _rate_limited_telegram(msg, dedup_key=dedup_key)
+        await _rate_limited_telegram(msg, dedup_key=dedup_key, db=db)
         logger.warning(
             "Latency spike incident opened [%s, scope=%s]: %s",
             root_cause,
@@ -1620,7 +1643,7 @@ async def _check_traffic_anomaly(db: AsyncSession) -> None:
         )
         if link:
             msg += f"\n{link}"
-        await _rate_limited_telegram(msg, dedup_key=f"traffic_anomaly:{ip}")
+        await _rate_limited_telegram(msg, dedup_key=f"traffic_anomaly:{ip}", db=db)
         logger.warning("Traffic anomaly opened for %s: %.1f× normal", hostname, ratio)
 
 
