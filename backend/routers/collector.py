@@ -106,14 +106,32 @@ async def ingest_latency(
     """
     accepted = rejected = 0
 
+    logger.info(
+        "[latency] Received payload: %d rows — sample: %s",
+        len(payload.rows),
+        payload.rows[:2] if payload.rows else [],
+    )
+
     for row in payload.rows:
-        if not _ts_ok(row.get("time")):
+        raw_time = row.get("time")
+        if not _ts_ok(raw_time):
             logger.warning(
-                "Rejected latency row: timestamp out of range — %s",
-                row.get("time"),
+                "[latency] Rejected row: timestamp out of range — raw=%r, keys=%s",
+                raw_time,
+                list(row.keys()),
             )
             rejected += 1
             continue
+
+        params = {
+            "time":            _parse_ts(raw_time),
+            "target_name":     row.get("target_name"),
+            "target_ip":       row.get("target_ip"),
+            "target_type":     row.get("target_type", "internal"),
+            "rtt_ms":          _float(row.get("rtt_ms")),      # None on 100% loss
+            "packet_loss_pct": _float(row.get("packet_loss_pct")) or 0.0,
+        }
+        logger.debug("[latency] Inserting row: %s", params)
 
         try:
             await db.execute(
@@ -124,27 +142,41 @@ async def ingest_latency(
                         (:time, :target_name, CAST(:target_ip AS INET), :target_type,
                          :rtt_ms, :packet_loss_pct)
                 """),
-                {
-                    "time":            _parse_ts(row.get("time")),
-                    "target_name":     row.get("target_name"),
-                    "target_ip":       row.get("target_ip"),
-                    "target_type":     row.get("target_type", "internal"),
-                    "rtt_ms":          _float(row.get("rtt_ms")),      # None on 100% loss
-                    "packet_loss_pct": _float(row.get("packet_loss_pct")) or 0.0,
-                },
+                params,
             )
             accepted += 1
         except Exception as exc:
-            logger.error("Failed to insert latency row: %s — %s", row, exc)
+            logger.error(
+                "[latency] INSERT failed — row=%s exc=%s",
+                row,
+                exc,
+                exc_info=True,
+            )
+            # Roll back and start a fresh transaction so previous accepted rows
+            # are not lost on the next iteration.
             await db.rollback()
             rejected += 1
 
     try:
         await db.commit()
     except Exception as exc:
-        logger.error("Failed to commit latency batch: %s", exc)
+        logger.error("[latency] Commit failed: %s", exc, exc_info=True)
         await db.rollback()
         raise HTTPException(status_code=500, detail="DB commit failed")
+
+    # Sanity check: log current row count so we can confirm writes land.
+    try:
+        result = await db.execute(text("SELECT COUNT(*) FROM latency_metrics"))
+        total = result.scalar()
+        logger.info(
+            "[latency] Batch done — accepted=%d rejected=%d total_in_table=%s",
+            accepted,
+            rejected,
+            total,
+        )
+    except Exception as exc:
+        logger.warning("[latency] Could not query row count: %s", exc)
+        logger.info("[latency] Batch done — accepted=%d rejected=%d", accepted, rejected)
 
     return {"accepted": accepted, "rejected": rejected}
 
