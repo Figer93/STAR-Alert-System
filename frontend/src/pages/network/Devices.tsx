@@ -882,11 +882,33 @@ export default function Devices() {
     })
   }, [filtered, sort])
 
-  // Group sorted rows by hostname + MAC vendor.
-  // Two entries are the same physical device (interfaces) only when they share the same
-  // hostname AND the same MAC OUI (vendor prefix). Generic hostnames like "iPhone" or
-  // "iPad" are never grouped — they're common names shared by many different devices.
+  // Group sorted rows into physical devices.
+  //
+  // Priority order for the group key:
+  //   1. No/generic hostname → unique row per IP, never grouped.
+  //   2. Both rows share the same non-null last_logged_in_user (NinjaRMM) →
+  //      group by hostname:user — definite same physical device, multiple interfaces.
+  //   3. One or both rows have a non-null last_logged_in_user that differs →
+  //      force unique key per IP — different physical devices sharing a hostname.
+  //   4. Both rows have null last_logged_in_user → fall back to hostname:macVendor
+  //      (original behaviour).
+  //
+  // Because we only know another row's user after we've seen it, we do two passes:
+  //   Pass 1 — bucket rows by hostname to find which user-values appear per hostname.
+  //   Pass 2 — assign the final group key using the rules above.
   const grouped = useMemo<DeviceGroup[]>(() => {
+    // Pass 1: collect all distinct non-null users per normalised hostname
+    const usersByHostname = new Map<string, Set<string>>()
+    for (const d of sorted) {
+      const h = d.hostname?.trim().toLowerCase()
+      if (!h || isGenericHostname(d.hostname)) continue
+      if (d.last_logged_in_user) {
+        if (!usersByHostname.has(h)) usersByHostname.set(h, new Set())
+        usersByHostname.get(h)!.add(d.last_logged_in_user.toLowerCase())
+      }
+    }
+
+    // Pass 2: assign group keys
     const map = new Map<string, DeviceRow[]>()
     for (const d of sorted) {
       const h = d.hostname?.trim().toLowerCase()
@@ -895,10 +917,21 @@ export default function Devices() {
         // No hostname or generic name → unique row per IP, no grouping
         key = `__ip__${d.ip}`
       } else {
-        // Non-generic hostname → group by hostname:macVendor so that same device
-        // with multiple interfaces collapses, but different devices with the same
-        // hostname stay separate (different vendor → different group key)
-        key = `${h}:${macVendorPrefix(d.mac)}`
+        const usersForHostname = usersByHostname.get(h)
+        const thisUser = d.last_logged_in_user?.toLowerCase() ?? null
+
+        if (usersForHostname && usersForHostname.size > 1) {
+          // Multiple distinct users share this hostname → different physical devices.
+          // Each user gets its own group; rows with no user get a unique per-IP key.
+          key = thisUser ? `${h}:user:${thisUser}` : `__ip__${d.ip}`
+        } else if (thisUser) {
+          // Only one user value seen for this hostname (or this is the only row with
+          // a user). Group by hostname:user — definite same physical device.
+          key = `${h}:user:${thisUser}`
+        } else {
+          // No NinjaRMM user data → original MAC-vendor grouping
+          key = `${h}:${macVendorPrefix(d.mac)}`
+        }
       }
       if (!map.has(key)) map.set(key, [])
       map.get(key)!.push(d)
