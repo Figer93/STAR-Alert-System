@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     # Leave blank to omit links from notifications.
     STAR_URL: str = ""
 
+    # LAN default gateway — pfSense router IP on the LAN segment.
+    # Used by the Investigate page "Gateway Latency" chart to find the right
+    # latency_metrics row (collector stores all LAN pings as target_type='internal').
+    LAN_GATEWAY_IP: str = "10.2.1.253"
+
     # ISP gateway IPs (first WAN hop).  Set WAN1/WAN2 for dual-uplink sites.
     # WAN_GATEWAY_IP is kept for backward compatibility (single-uplink sites).
     WAN_GATEWAY_IP: str = ""   # legacy single-WAN — superseded by WAN1/WAN2 below

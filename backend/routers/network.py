@@ -1375,27 +1375,30 @@ async def get_device(ip: str, db: AsyncSession = Depends(get_db)):
             GROUP BY bucket ORDER BY bucket ASC
         """, {"ip": ip})
 
-    # Gateway latency last 24h (shows network conditions for this device's segment)
-    # fping tracks fixed targets (gateway/WAN/DNS), not individual device IPs
+    # Gateway latency last 24h (shows LAN-segment health for any device).
+    # The collector pings the LAN gateway (pfSense) and stores it as
+    # target_type='internal', so we match by IP, not type.
+    from backend.config import settings as _settings
+    _gw_ip = _settings.LAN_GATEWAY_IP or "10.2.1.253"
     latency_24h = await _exec(db, """
         SELECT time_bucket('15 minutes', time) AS bucket,
                AVG(rtt_ms) AS avg_rtt,
                AVG(packet_loss_pct) AS avg_loss
         FROM latency_metrics
-        WHERE target_type = 'gateway'
+        WHERE target_ip::text = :gw_ip
           AND time > NOW() - INTERVAL '24 hours'
         GROUP BY bucket ORDER BY bucket ASC
-    """, {})
+    """, {"gw_ip": _gw_ip})
     if not latency_24h:
         latency_24h = await _exec(db, """
             SELECT date_trunc('hour', time) AS bucket,
                    AVG(rtt_ms) AS avg_rtt,
                    AVG(packet_loss_pct) AS avg_loss
             FROM latency_metrics
-            WHERE target_type = 'gateway'
+            WHERE target_ip::text = :gw_ip
               AND time > NOW() - INTERVAL '24 hours'
             GROUP BY bucket ORDER BY bucket ASC
-        """, {})
+        """, {"gw_ip": _gw_ip})
 
     # Related incidents
     incidents = await _exec(db,
