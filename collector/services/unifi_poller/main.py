@@ -345,9 +345,9 @@ def _write_devices(rows: list[dict]) -> None:
 # ── Background flush thread ───────────────────────────────────────────────────
 
 def _flush_loop() -> None:
-    """Background thread: flush buffer to backend every 60 seconds."""
+    """Background thread: flush buffer to backend every 20 seconds."""
     while True:
-        time.sleep(60)
+        time.sleep(20)
         try:
             flush_to_backend(BACKEND_URL)
         except Exception as exc:

@@ -16,7 +16,7 @@ Usage in each service:
 
     def _flush_loop():
         while True:
-            time.sleep(60)
+            time.sleep(20)
             flush_to_backend(BACKEND_URL)
 """
 
