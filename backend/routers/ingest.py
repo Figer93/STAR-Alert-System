@@ -105,7 +105,19 @@ async def ingest_ninjarmm(request: Request, db: AsyncSession = Depends(get_db)):
     activity_type = payload.get("activityType") or payload.get("eventType", "UNKNOWN")
     status_code   = payload.get("statusCode", "")
     device_id     = payload.get("deviceId")
-    device_name   = payload.get("deviceName") or (f"Device #{device_id}" if device_id else "Unknown Device")
+
+    # Resolve hostname from device_registry using ninja_id — avoids "Device #158" placeholders
+    resolved_hostname: str | None = None
+    if device_id:
+        from sqlalchemy import text as _text
+        row = (await db.execute(
+            _text("SELECT hostname FROM device_registry WHERE ninja_id = :nid LIMIT 1"),
+            {"nid": device_id},
+        )).first()
+        if row and row.hostname:
+            resolved_hostname = row.hostname
+
+    device_name = resolved_hostname or payload.get("deviceName") or (f"Device #{device_id}" if device_id else "Unknown Device")
 
     # Build effective event type (mirrors adapter logic)
     if activity_type == "CONDITION" and status_code:
@@ -120,7 +132,9 @@ async def ingest_ninjarmm(request: Request, db: AsyncSession = Depends(get_db)):
             data      = payload.get("data") or {}
             msg_data  = data.get("message") or {}
             cond_code = msg_data.get("code", "") or effective_event_type
-            fingerprint_key = f"{device_name}:{cond_code}"
+            # Mirror adapter fingerprint: device_id-based when available
+            fp_device = str(device_id) if device_id and cond_code else device_name
+            fingerprint_key = f"{fp_device}:{cond_code}"
             resolved = await _resolve_alerts_by_fingerprint_key(
                 "ninjarmm", "condition_triggered", fingerprint_key, db
             )
@@ -133,9 +147,32 @@ async def ingest_ninjarmm(request: Request, db: AsyncSession = Depends(get_db)):
             logger.info("NinjaRMM DEVICE_ONLINE: resolved %d alert(s) for %s", resolved, device_name)
         return {"status": "resolved", "resolved_count": resolved}
 
+    # For condition alerts: dedup against any active alert for the same device+code,
+    # regardless of the time-window used by the generic alert engine.
+    if effective_event_type == "CONDITION_TRIGGERED":
+        data      = payload.get("data") or {}
+        msg_data  = data.get("message") or {}
+        cond_code = msg_data.get("code", "")
+        if cond_code and device_id:
+            import hashlib as _hs
+            fp_key     = f"{device_id}:{cond_code}"
+            fingerprint = _hs.sha256(f"ninjarmm:condition_triggered:{fp_key}".encode()).hexdigest()
+            stmt = (
+                select(Alert)
+                .where(Alert.fingerprint == fingerprint)
+                .where(Alert.status.in_(["active", "acknowledged"]))
+            )
+            existing = (await db.execute(stmt)).scalars().first()
+            if existing:
+                existing.last_seen = datetime.now(timezone.utc)
+                existing.occurrence_count += 1
+                await db.commit()
+                logger.info("NinjaRMM dedup: updated alert id=%d for %s cond=%s", existing.id, device_name, cond_code)
+                return {"status": "deduped", "alert_id": existing.id}
+
     adapter = ADAPTER_REGISTRY["ninjarmm"]()
     try:
-        raw = adapter.parse(payload)
+        raw = adapter.parse(payload, resolved_hostname=resolved_hostname)
     except Exception as e:
         logger.exception("NinjaRMM adapter parse error")
         raise HTTPException(status_code=422, detail=str(e))
