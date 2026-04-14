@@ -55,10 +55,11 @@ interface InvestigateTimeline {
 }
 
 interface DeviceGroup {
-  key:         string
-  hostname:    string | null
-  entries:     DeviceRow[]   // sorted by last_seen desc; entries[0] is primary
-  isDuplicate: boolean       // true when same hostname appears on 2+ connections
+  key:          string
+  hostname:     string | null
+  entries:      DeviceRow[]   // sorted by last_seen desc; entries[0] is primary
+  isDuplicate:  boolean       // true when same hostname + same MAC vendor → multiple interfaces on one device
+  isSharedName: boolean       // true when hostname appears in multiple separate groups (common device name)
 }
 
 type SortCol      = 'hostname' | 'ip' | 'last_seen' | 'device_type' | 'is_online'
@@ -93,6 +94,26 @@ const EVENT_COLORS: Record<string, string> = {
   latency_spike:   'var(--amber)',
   traffic_anomaly: 'var(--blue)',
   default:         'var(--text-muted)',
+}
+
+// Common/generic device names that many devices share — excluded from duplicate grouping
+const GENERIC_HOSTNAMES = new Set([
+  'iphone', 'ipad', 'ipad mini', 'ipad pro', 'ipad air',
+  'macbook', 'macbook pro', 'macbook air', 'mac mini', 'imac', 'mac pro', 'mac studio',
+  'apple tv', 'apple watch', 'watch',
+  'android', 'android phone', 'android device',
+  'galaxy', 'pixel', 'home',
+])
+
+function isGenericHostname(hostname: string | null): boolean {
+  if (!hostname) return false
+  return GENERIC_HOSTNAMES.has(hostname.trim().toLowerCase())
+}
+
+// Returns the first 3 octets of a MAC address (OUI / vendor prefix) as a lowercase hex string
+function macVendorPrefix(mac: string | null): string {
+  if (!mac) return 'unknown'
+  return mac.replace(/[^a-fA-F0-9]/g, '').slice(0, 6).toLowerCase()
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -154,7 +175,7 @@ function TypeChip({ type }: { type: string | null }) {
   )
 }
 
-function DualConnectionBadge({ count }: { count: number }) {
+function InterfacesBadge({ count }: { count: number }) {
   return (
     <span style={{
       display: 'inline-flex',
@@ -164,13 +185,30 @@ function DualConnectionBadge({ count }: { count: number }) {
       borderRadius: 10,
       fontSize: 11,
       fontWeight: 600,
-      background: 'rgba(245,158,11,0.15)',
-      border: '1px solid rgba(245,158,11,0.4)',
-      color: 'var(--amber)',
+      background: 'rgba(34,197,94,0.15)',
+      border: '1px solid rgba(34,197,94,0.4)',
+      color: 'var(--green)',
       lineHeight: 1.4,
       flexShrink: 0,
     }}>
-      {count} connections
+      {count} interfaces
+    </span>
+  )
+}
+
+function CommonNameIcon() {
+  return (
+    <span
+      title="This hostname is shared by many devices and may not be unique."
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        color: '#4b5563',
+        cursor: 'help',
+        flexShrink: 0,
+      }}
+    >
+      <HelpCircle size={12} />
     </span>
   )
 }
@@ -828,20 +866,45 @@ export default function Devices() {
     })
   }, [filtered, sort])
 
-  // Group sorted rows by hostname. Devices with no hostname stay ungrouped (keyed by IP).
+  // Group sorted rows by hostname + MAC vendor.
+  // Two entries are the same physical device (interfaces) only when they share the same
+  // hostname AND the same MAC OUI (vendor prefix). Generic hostnames like "iPhone" or
+  // "iPad" are never grouped — they're common names shared by many different devices.
   const grouped = useMemo<DeviceGroup[]>(() => {
     const map = new Map<string, DeviceRow[]>()
     for (const d of sorted) {
-      const key = d.hostname?.trim().toLowerCase() || `__ip__${d.ip}`
+      const h = d.hostname?.trim().toLowerCase()
+      let key: string
+      if (!h || isGenericHostname(d.hostname)) {
+        // No hostname or generic name → unique row per IP, no grouping
+        key = `__ip__${d.ip}`
+      } else {
+        // Non-generic hostname → group by hostname:macVendor so that same device
+        // with multiple interfaces collapses, but different devices with the same
+        // hostname stay separate (different vendor → different group key)
+        key = `${h}:${macVendorPrefix(d.mac)}`
+      }
       if (!map.has(key)) map.set(key, [])
       map.get(key)!.push(d)
     }
-    return Array.from(map.entries()).map(([key, entries]) => ({
-      key,
-      hostname: entries[0].hostname,
-      entries,
-      isDuplicate: entries.length > 1,
-    }))
+
+    // Count how many groups share the same display hostname (for "common name" badge)
+    const hostnameGroupCount = new Map<string, number>()
+    for (const entries of map.values()) {
+      const h = entries[0].hostname?.trim().toLowerCase()
+      if (h) hostnameGroupCount.set(h, (hostnameGroupCount.get(h) ?? 0) + 1)
+    }
+
+    return Array.from(map.entries()).map(([_key, entries]) => {
+      const h = entries[0].hostname?.trim().toLowerCase()
+      return {
+        key: _key,
+        hostname: entries[0].hostname,
+        entries,
+        isDuplicate:  entries.length > 1,
+        isSharedName: h ? (hostnameGroupCount.get(h) ?? 0) > 1 : false,
+      }
+    })
   }, [sorted])
 
   function toggleSort(col: SortCol) {
@@ -1177,7 +1240,8 @@ export default function Devices() {
                                 <ExternalLink size={11} style={{ opacity: 0.6 }} />
                               </button>
                             )}
-                            {group.isDuplicate && <DualConnectionBadge count={group.entries.length} />}
+                            {group.isDuplicate && <InterfacesBadge count={group.entries.length} />}
+                            {!group.isDuplicate && group.isSharedName && <CommonNameIcon />}
                           </div>
                         </td>
 
@@ -1281,7 +1345,7 @@ export default function Devices() {
                           <td colSpan={8} style={{
                             padding: '0 14px 14px 40px',
                             borderBottom: '1px solid var(--border)',
-                            background: 'rgba(245,158,11,0.03)',
+                            background: 'rgba(34,197,94,0.03)',
                           }}>
                             <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
                               {group.entries.map(entry => (
