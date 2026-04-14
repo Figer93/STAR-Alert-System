@@ -177,6 +177,34 @@ export const getOpenNetworkIncidents = () =>
 export const getNetworkIncidents = (status: 'open' | 'resolved' | 'all', limit = 200) =>
   api.get<OpenIncidentRow[]>('/network/incidents', { params: { status, limit } }).then(r => r.data)
 
+// ── System health ─────────────────────────────────────────────────────────────
+
+export interface DbHealthData {
+  size_bytes:  number
+  limit_bytes: number
+  top_tables:  { name: string; size_bytes: number }[]
+  connections: number
+}
+
+export interface CollectorHeartbeatLatest {
+  last_seen:         string | null
+  collector_version: string | null
+}
+
+export interface RailwayStatusData {
+  status:      string
+  deployment:  string
+}
+
+export const getDbHealth = () =>
+  api.get<DbHealthData>('/system/db-health').then(r => r.data)
+
+export const getCollectorHeartbeatLatest = () =>
+  api.get<CollectorHeartbeatLatest>('/collector/heartbeat/latest').then(r => r.data)
+
+export const getRailwayStatus = () =>
+  api.get<RailwayStatusData>('/system/railway-status').then(r => r.data)
+
 // ── CSV export ────────────────────────────────────────────────────────────────
 
 export const exportAlertsCsv = () => {

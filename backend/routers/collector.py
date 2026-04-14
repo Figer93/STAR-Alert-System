@@ -502,3 +502,23 @@ async def ingest_heartbeat(
         raise HTTPException(status_code=500, detail="DB commit failed")
 
     return {"status": "ok"}
+
+
+# ── GET /api/collector/heartbeat/latest ──────────────────────────────────────
+
+@router.get("/heartbeat/latest")
+async def get_latest_heartbeat(db: AsyncSession = Depends(get_db)) -> dict:
+    """Return the most-recently-seen collector heartbeat row."""
+    row = await db.execute(
+        text(
+            "SELECT last_seen, version FROM collector_heartbeat"
+            " ORDER BY last_seen DESC LIMIT 1"
+        )
+    )
+    result = row.fetchone()
+    if result is None:
+        return {"last_seen": None, "collector_version": None}
+    return {
+        "last_seen":         result.last_seen.isoformat() if result.last_seen else None,
+        "collector_version": result.version,
+    }

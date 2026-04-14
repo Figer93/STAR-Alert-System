@@ -4,7 +4,7 @@ import {
   LayoutDashboard, History, Radio, Settings,
   Network, GitBranch, Wifi, Activity,
   Search, Layers, AlertTriangle, Telescope,
-  ChevronRight
+  ChevronRight, HeartPulse
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { NetworkStatusBanners } from '../network/NetworkStatusBanners'
@@ -42,6 +42,7 @@ const PAGE_META: Record<string, { title: string; crumbs: string[] }> = {
   '/network/devices':   { title: 'Devices', crumbs: ['Network'] },
   '/network/incidents': { title: 'Incidents', crumbs: ['Network'] },
   '/network/settings':  { title: 'Settings', crumbs: ['Network'] },
+  '/system/health':     { title: 'System Health', crumbs: ['System'] },
 }
 
 // ── Sidebar items ─────────────────────────────────────────────────────────────
@@ -62,7 +63,8 @@ const NETWORK_NAV = [
 ]
 
 const BOTTOM_NAV = [
-  { to: '/settings', icon: Settings, label: 'Settings' },
+  { to: '/system/health', icon: HeartPulse, label: 'System health' },
+  { to: '/settings',      icon: Settings,   label: 'Settings' },
 ]
 
 // ── Sidebar divider ───────────────────────────────────────────────────────────
