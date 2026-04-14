@@ -10,7 +10,18 @@ from backend.config import settings
 
 _slow_query_logger = logging.getLogger("slow_query")
 
-_is_postgres = "postgresql" in settings.DATABASE_URL
+# Normalise the DATABASE_URL so create_async_engine always gets the asyncpg
+# dialect.  Railway (and many PaaS providers) supply a bare postgresql:// URL
+# which SQLAlchemy maps to the sync psycopg2 driver — not installed here.
+def _normalise_db_url(url: str) -> str:
+    for prefix in ("postgresql://", "postgres://"):
+        if url.startswith(prefix):
+            return "postgresql+asyncpg://" + url[len(prefix):]
+    return url
+
+_DATABASE_URL = _normalise_db_url(settings.DATABASE_URL)
+
+_is_postgres = "postgresql" in _DATABASE_URL
 
 _engine_kwargs: dict = {"echo": settings.DEBUG}
 
@@ -33,7 +44,7 @@ if _is_postgres:
 else:
     _engine_kwargs["connect_args"] = {"check_same_thread": False}
 
-engine = create_async_engine(settings.DATABASE_URL, **_engine_kwargs)
+engine = create_async_engine(_DATABASE_URL, **_engine_kwargs)
 
 # ── Slow-query logging ────────────────────────────────────────────────────────
 # Fires on the underlying sync engine so it works with asyncpg.
