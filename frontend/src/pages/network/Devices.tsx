@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Search, Monitor, Server, Printer, Wifi as WifiIcon,
-  HelpCircle, ChevronUp, ChevronDown, ChevronsUpDown,
+  HelpCircle, ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight,
   ExternalLink, Edit2, Check, X, Trash2, AlertTriangle,
   RefreshCw, Download, Router, Smartphone, Network, Cpu,
 } from 'lucide-react'
@@ -52,6 +52,13 @@ interface TimelineEvent {
 
 interface InvestigateTimeline {
   timeline: TimelineEvent[]
+}
+
+interface DeviceGroup {
+  key:         string
+  hostname:    string | null
+  entries:     DeviceRow[]   // sorted by last_seen desc; entries[0] is primary
+  isDuplicate: boolean       // true when same hostname appears on 2+ connections
 }
 
 type SortCol      = 'hostname' | 'ip' | 'last_seen' | 'device_type' | 'is_online'
@@ -144,6 +151,106 @@ function TypeChip({ type }: { type: string | null }) {
       <Icon size={13} />
       {label}
     </span>
+  )
+}
+
+function DualConnectionBadge({ count }: { count: number }) {
+  return (
+    <span style={{
+      display: 'inline-flex',
+      alignItems: 'center',
+      gap: 4,
+      padding: '2px 7px',
+      borderRadius: 10,
+      fontSize: 11,
+      fontWeight: 600,
+      background: 'rgba(245,158,11,0.15)',
+      border: '1px solid rgba(245,158,11,0.4)',
+      color: 'var(--amber)',
+      lineHeight: 1.4,
+      flexShrink: 0,
+    }}>
+      {count} connections
+    </span>
+  )
+}
+
+function ConnectionTag({ wired }: { wired: boolean | null }) {
+  const label = wired === true ? 'Wired' : wired === false ? 'Wi-Fi' : 'Unknown'
+  const color = wired === true ? 'var(--blue)' : wired === false ? '#a78bfa' : 'var(--text-muted)'
+  return (
+    <span style={{
+      display: 'inline-block',
+      padding: '2px 7px',
+      borderRadius: 8,
+      fontSize: 11,
+      fontWeight: 600,
+      background: `color-mix(in srgb, ${color} 15%, transparent)`,
+      border: `1px solid color-mix(in srgb, ${color} 35%, transparent)`,
+      color,
+    }}>
+      {label}
+    </span>
+  )
+}
+
+function ConnectionCard({
+  entry,
+  onInspect,
+}: {
+  entry: DeviceRow
+  onInspect: () => void
+}) {
+  return (
+    <div style={{
+      flex: 1,
+      background: 'var(--bg-base)',
+      border: '1px solid var(--border)',
+      borderRadius: 8,
+      padding: '12px 14px',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 8,
+      minWidth: 0,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <StatusDot online={entry.is_online} />
+        <ConnectionTag wired={entry.is_wired} />
+        <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-muted)' }}>{ago(entry.last_seen)}</span>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px 12px' }}>
+        {[
+          ['IP',         entry.ip],
+          ['MAC',        entry.mac ?? '--'],
+          ['Switch',     entry.switch_name ?? entry.switch_id ?? '--'],
+          ['Port',       entry.port_id ? `Port ${entry.port_id}` : '--'],
+        ].map(([label, value]) => (
+          <div key={label}>
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 1 }}>{label}</div>
+            <div style={{ fontSize: 12, color: 'var(--text-primary)', fontFamily: 'monospace', wordBreak: 'break-all' }}>{value}</div>
+          </div>
+        ))}
+      </div>
+      <button
+        onClick={e => { e.stopPropagation(); onInspect() }}
+        style={{
+          marginTop: 2,
+          padding: '5px 10px',
+          background: 'none',
+          border: '1px solid var(--border)',
+          color: 'var(--text-muted)',
+          borderRadius: 5,
+          cursor: 'pointer',
+          fontSize: 12,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 5,
+          alignSelf: 'flex-start',
+        }}
+      >
+        <ExternalLink size={11} /> Inspect
+      </button>
+    </div>
   )
 }
 
@@ -647,6 +754,15 @@ export default function Devices() {
   const [sort, setSort]                 = useState<{ col: SortCol; dir: 'asc' | 'desc' }>({ col: 'last_seen', dir: 'desc' })
 
   const [selectedIp, setSelectedIp]     = useState<string | null>(null)
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
+
+  function toggleGroup(key: string) {
+    setExpandedGroups(prev => {
+      const next = new Set(prev)
+      next.has(key) ? next.delete(key) : next.add(key)
+      return next
+    })
+  }
 
   // Inline notes editing: ip → current draft
   const [inlineNotes, setInlineNotes]   = useState<Record<string, string>>({})
@@ -711,6 +827,22 @@ export default function Devices() {
       return sort.dir === 'asc' ? cmp : -cmp
     })
   }, [filtered, sort])
+
+  // Group sorted rows by hostname. Devices with no hostname stay ungrouped (keyed by IP).
+  const grouped = useMemo<DeviceGroup[]>(() => {
+    const map = new Map<string, DeviceRow[]>()
+    for (const d of sorted) {
+      const key = d.hostname?.trim().toLowerCase() || `__ip__${d.ip}`
+      if (!map.has(key)) map.set(key, [])
+      map.get(key)!.push(d)
+    }
+    return Array.from(map.entries()).map(([key, entries]) => ({
+      key,
+      hostname: entries[0].hostname,
+      entries,
+      isDuplicate: entries.length > 1,
+    }))
+  }, [sorted])
 
   function toggleSort(col: SortCol) {
     setSort(prev =>
@@ -934,14 +1066,14 @@ export default function Devices() {
       )}
 
       {/* Filtered empty state */}
-      {!loading && !error && devices.length > 0 && sorted.length === 0 && (
+      {!loading && !error && devices.length > 0 && grouped.length === 0 && (
         <div style={{ textAlign: 'center', padding: '60px 32px', color: 'var(--text-muted)', fontSize: 13 }}>
           No devices match the current filter.
         </div>
       )}
 
       {/* Table */}
-      {(loading || sorted.length > 0) && (
+      {(loading || grouped.length > 0) && (
         <div style={{
           background: 'var(--bg-surface)',
           border: '1px solid var(--border)',
@@ -978,136 +1110,192 @@ export default function Devices() {
                   </tr>
                 ))
               ) : (
-                sorted.map(d => {
-                  const isSelected = selectedIp === d.ip
-                  const isEditingThisNote = editingNotes === d.ip
+                grouped.map(group => {
+                  const primary         = group.entries[0]
+                  const anyOnline       = group.entries.some(e => e.is_online)
+                  const isExpanded      = expandedGroups.has(group.key)
+                  const isSelected      = !group.isDuplicate && selectedIp === primary.ip
+                  const isEditingThisNote = !group.isDuplicate && editingNotes === primary.ip
+
                   return (
-                    <tr
-                      key={d.ip}
-                      onClick={() => setSelectedIp(isSelected ? null : d.ip)}
-                      style={{
-                        cursor: 'pointer',
-                        background: isSelected ? 'rgba(59,130,246,0.07)' : 'transparent',
-                        borderLeft: isSelected ? '3px solid var(--blue)' : '3px solid transparent',
-                        transition: 'background 0.15s',
-                      }}
-                      onMouseEnter={e => {
-                        if (!isSelected) (e.currentTarget as HTMLTableRowElement).style.background = 'rgba(255,255,255,0.03)'
-                      }}
-                      onMouseLeave={e => {
-                        if (!isSelected) (e.currentTarget as HTMLTableRowElement).style.background = 'transparent'
-                      }}
-                    >
-                      {/* Status */}
-                      <td style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)' }}>
-                        <StatusDot online={d.is_online} />
-                      </td>
-
-                      {/* Hostname */}
-                      <td style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)' }}>
-                        <button
-                          onClick={e => {
-                            e.stopPropagation()
-                            navigate(`/network/investigate?ip=${encodeURIComponent(d.ip)}`)
-                          }}
-                          style={{
-                            background: 'none', border: 'none', cursor: 'pointer',
-                            color: 'var(--blue)', fontWeight: 500, fontSize: 14,
-                            padding: 0, display: 'flex', alignItems: 'center', gap: 5,
-                          }}
-                        >
-                          <TextScramble text={displayName(d.hostname, d.mac)} />
-                          <ExternalLink size={11} style={{ opacity: 0.6 }} />
-                        </button>
-                      </td>
-
-                      {/* IP */}
-                      <td style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)', fontFamily: 'monospace', fontSize: 13, color: 'var(--text-muted)' }}>
-                        <TextScramble text={d.ip} />
-                      </td>
-
-                      {/* MAC */}
-                      <td style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)', fontFamily: 'monospace', fontSize: 12, color: 'var(--text-muted)' }}>
-                        {d.mac ?? '--'}
-                      </td>
-
-                      {/* Switch/Port */}
-                      <td style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)', fontSize: 13, color: 'var(--text-muted)' }}>
-                        {d.switch_id
-                          ? `${d.switch_name ?? d.switch_id} / Port ${d.port_id ?? '--'}`
-                          : '--'}
-                      </td>
-
-                      {/* Type */}
-                      <td style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)' }}>
-                        <TypeChip type={d.device_type} />
-                      </td>
-
-                      {/* Last seen */}
-                      <td style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)', fontSize: 13, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
-                        {ago(d.last_seen)}
-                      </td>
-
-                      {/* Notes */}
-                      <td
-                        style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)', maxWidth: 200 }}
-                        onClick={e => e.stopPropagation()}
+                    <Fragment key={group.key}>
+                      {/* Summary row */}
+                      <tr
+                        onClick={() => {
+                          if (group.isDuplicate) toggleGroup(group.key)
+                          else setSelectedIp(isSelected ? null : primary.ip)
+                        }}
+                        style={{
+                          cursor: 'pointer',
+                          background: isSelected ? 'rgba(59,130,246,0.07)' : 'transparent',
+                          borderLeft: isSelected ? '3px solid var(--blue)' : '3px solid transparent',
+                          transition: 'background 0.15s',
+                        }}
+                        onMouseEnter={e => {
+                          if (!isSelected) (e.currentTarget as HTMLTableRowElement).style.background = 'rgba(255,255,255,0.03)'
+                        }}
+                        onMouseLeave={e => {
+                          if (!isSelected) (e.currentTarget as HTMLTableRowElement).style.background = 'transparent'
+                        }}
                       >
-                        {isEditingThisNote ? (
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                            <input
-                              autoFocus
-                              value={inlineNotes[d.ip] ?? ''}
-                              onChange={e => setInlineNotes(prev => ({ ...prev, [d.ip]: e.target.value }))}
-                              onBlur={() => commitNotes(d.ip)}
-                              onKeyDown={e => {
-                                if (e.key === 'Enter') commitNotes(d.ip)
-                                if (e.key === 'Escape') setEditingNotes(null)
-                              }}
-                              style={{
-                                flex: 1,
-                                background: 'var(--bg-base)',
-                                border: '1px solid var(--blue)',
-                                color: 'var(--text-primary)',
-                                borderRadius: 5,
-                                padding: '4px 8px',
-                                fontSize: 12,
-                                minWidth: 0,
-                              }}
-                            />
-                            <button
-                              onMouseDown={() => commitNotes(d.ip)}
-                              style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--green)', padding: 2 }}
-                            >
-                              <Check size={13} />
-                            </button>
-                            <button
-                              onMouseDown={() => setEditingNotes(null)}
-                              style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 2 }}
-                            >
-                              <X size={13} />
-                            </button>
-                          </div>
-                        ) : (
-                          <div
-                            onClick={e => startEditNotes(d, e)}
-                            title={d.notes ?? 'Click to add notes'}
-                            style={{
-                              display: 'flex', alignItems: 'center', gap: 5,
-                              cursor: 'text',
-                              color: d.notes ? 'var(--text-muted)' : '#374151',
-                              fontSize: 12,
-                              maxWidth: 180,
-                            }}
-                          >
-                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
-                              {d.notes ?? 'Add note...'}
+                        {/* Status */}
+                        <td style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)' }}>
+                          {group.isDuplicate ? (
+                            <span style={{ color: 'var(--text-muted)', display: 'flex', alignItems: 'center' }}>
+                              {isExpanded
+                                ? <ChevronDown size={14} />
+                                : <ChevronRight size={14} />}
                             </span>
-                            <Edit2 size={11} style={{ flexShrink: 0, opacity: 0.5 }} />
+                          ) : (
+                            <StatusDot online={anyOnline} />
+                          )}
+                        </td>
+
+                        {/* Hostname */}
+                        <td style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                            {group.isDuplicate ? (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                <StatusDot online={anyOnline} />
+                                <span style={{ fontWeight: 500, fontSize: 14, color: 'var(--text-primary)' }}>
+                                  <TextScramble text={displayName(group.hostname, primary.mac)} />
+                                </span>
+                              </div>
+                            ) : (
+                              <button
+                                onClick={e => {
+                                  e.stopPropagation()
+                                  navigate(`/network/investigate?ip=${encodeURIComponent(primary.ip)}`)
+                                }}
+                                style={{
+                                  background: 'none', border: 'none', cursor: 'pointer',
+                                  color: 'var(--blue)', fontWeight: 500, fontSize: 14,
+                                  padding: 0, display: 'flex', alignItems: 'center', gap: 5,
+                                }}
+                              >
+                                <TextScramble text={displayName(primary.hostname, primary.mac)} />
+                                <ExternalLink size={11} style={{ opacity: 0.6 }} />
+                              </button>
+                            )}
+                            {group.isDuplicate && <DualConnectionBadge count={group.entries.length} />}
                           </div>
-                        )}
-                      </td>
-                    </tr>
+                        </td>
+
+                        {/* IP */}
+                        <td style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)', fontFamily: 'monospace', fontSize: 13, color: 'var(--text-muted)' }}>
+                          {group.isDuplicate
+                            ? <span style={{ fontSize: 12 }}>multiple</span>
+                            : <TextScramble text={primary.ip} />}
+                        </td>
+
+                        {/* MAC */}
+                        <td style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)', fontFamily: 'monospace', fontSize: 12, color: 'var(--text-muted)' }}>
+                          {group.isDuplicate ? '--' : (primary.mac ?? '--')}
+                        </td>
+
+                        {/* Switch/Port */}
+                        <td style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)', fontSize: 13, color: 'var(--text-muted)' }}>
+                          {group.isDuplicate
+                            ? '--'
+                            : primary.switch_id
+                              ? `${primary.switch_name ?? primary.switch_id} / Port ${primary.port_id ?? '--'}`
+                              : '--'}
+                        </td>
+
+                        {/* Type */}
+                        <td style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)' }}>
+                          <TypeChip type={primary.device_type} />
+                        </td>
+
+                        {/* Last seen */}
+                        <td style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)', fontSize: 13, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+                          {ago(primary.last_seen)}
+                        </td>
+
+                        {/* Notes */}
+                        <td
+                          style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)', maxWidth: 200 }}
+                          onClick={e => e.stopPropagation()}
+                        >
+                          {group.isDuplicate ? (
+                            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>--</span>
+                          ) : isEditingThisNote ? (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <input
+                                autoFocus
+                                value={inlineNotes[primary.ip] ?? ''}
+                                onChange={e => setInlineNotes(prev => ({ ...prev, [primary.ip]: e.target.value }))}
+                                onBlur={() => commitNotes(primary.ip)}
+                                onKeyDown={e => {
+                                  if (e.key === 'Enter') commitNotes(primary.ip)
+                                  if (e.key === 'Escape') setEditingNotes(null)
+                                }}
+                                style={{
+                                  flex: 1,
+                                  background: 'var(--bg-base)',
+                                  border: '1px solid var(--blue)',
+                                  color: 'var(--text-primary)',
+                                  borderRadius: 5,
+                                  padding: '4px 8px',
+                                  fontSize: 12,
+                                  minWidth: 0,
+                                }}
+                              />
+                              <button
+                                onMouseDown={() => commitNotes(primary.ip)}
+                                style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--green)', padding: 2 }}
+                              >
+                                <Check size={13} />
+                              </button>
+                              <button
+                                onMouseDown={() => setEditingNotes(null)}
+                                style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 2 }}
+                              >
+                                <X size={13} />
+                              </button>
+                            </div>
+                          ) : (
+                            <div
+                              onClick={e => startEditNotes(primary, e)}
+                              title={primary.notes ?? 'Click to add notes'}
+                              style={{
+                                display: 'flex', alignItems: 'center', gap: 5,
+                                cursor: 'text',
+                                color: primary.notes ? 'var(--text-muted)' : '#374151',
+                                fontSize: 12,
+                                maxWidth: 180,
+                              }}
+                            >
+                              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+                                {primary.notes ?? 'Add note...'}
+                              </span>
+                              <Edit2 size={11} style={{ flexShrink: 0, opacity: 0.5 }} />
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+
+                      {/* Expanded connections panel */}
+                      {group.isDuplicate && isExpanded && (
+                        <tr>
+                          <td colSpan={8} style={{
+                            padding: '0 14px 14px 40px',
+                            borderBottom: '1px solid var(--border)',
+                            background: 'rgba(245,158,11,0.03)',
+                          }}>
+                            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                              {group.entries.map(entry => (
+                                <ConnectionCard
+                                  key={entry.ip}
+                                  entry={entry}
+                                  onInspect={() => setSelectedIp(entry.ip)}
+                                />
+                              ))}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
                   )
                 })
               )}
@@ -1115,7 +1303,7 @@ export default function Devices() {
           </table>
 
           {/* Table footer */}
-          {sorted.length > 0 && (
+          {grouped.length > 0 && (
             <div style={{
               padding: '10px 16px',
               borderTop: '1px solid var(--border)',
@@ -1124,7 +1312,11 @@ export default function Devices() {
               display: 'flex',
               justifyContent: 'space-between',
             }}>
-              <span>{sorted.length} device{sorted.length !== 1 ? 's' : ''}{sorted.length !== devices.length ? ` (filtered from ${devices.length})` : ''}</span>
+              <span>
+                {grouped.length} device{grouped.length !== 1 ? 's' : ''}
+                {sorted.length !== grouped.length && ` · ${sorted.length} connections`}
+                {sorted.length !== devices.length ? ` (filtered from ${devices.length})` : ''}
+              </span>
               <span>{counts.online} online · {counts.offline} offline</span>
             </div>
           )}
