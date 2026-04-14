@@ -130,6 +130,7 @@ interface DeviceDetail {
 const CAUSE_LABELS: Record<string, string> = {
   cable_or_nic:         'Cable or NIC Issue',
   wan_issue:            'WAN / ISP Issue',
+  wan_instability:      'No device-specific issues — WAN instability detected',
   global_wan_incident:  'No device-specific issues — global WAN outage active',
   firewall_drop: 'Firewall Blocking Traffic',
   server_side:   'Remote Server Issue',
@@ -185,7 +186,7 @@ function resolveProto(protocol: number | null, dstPort: number | null): string {
 }
 
 function diagnosisColor(cause: string, conf: string): string {
-  if (cause === 'healthy' || cause === 'global_wan_incident') return '#22c55e'
+  if (cause === 'healthy' || cause === 'global_wan_incident' || cause === 'wan_instability') return '#22c55e'
   if (cause === 'unknown') return '#6b7280'
   return conf === 'high' ? '#ef4444' : '#eab308'
 }
@@ -620,6 +621,7 @@ function DiagnosisPanel({ hypothesis, metrics, globalIncidents }: {
   // Backend sets likely_cause='global_wan_incident' when WAN loss coincides with an
   // active global incident. Also handle the legacy frontend-only path as a fallback.
   const isWanCausedByGlobal = hypothesis.likely_cause === 'global_wan_incident'
+    || hypothesis.likely_cause === 'wan_instability'
     || (hypothesis.likely_cause === 'wan_issue' && globalIncidents.length > 0)
   const effectiveCause      = isWanCausedByGlobal ? 'global_wan_incident' : hypothesis.likely_cause
   const effectiveLabel      = isWanCausedByGlobal
@@ -648,8 +650,9 @@ function DiagnosisPanel({ hypothesis, metrics, globalIncidents }: {
 
       {isWanCausedByGlobal ? (
         <p style={{ fontSize: 12, color: 'var(--text-dim)', margin: '0 0 14px', lineHeight: 1.6 }}>
-          WAN/ISP packet loss was detected during this window, but a global outage was active at the same time.
-          The connectivity issue is network-wide — not caused by this device. See the global outage banner above.
+          {hypothesis.likely_cause === 'wan_instability'
+            ? 'Gateway and WAN packet loss are equal — the loss is infrastructure-wide, not caused by this device.'
+            : 'WAN/ISP packet loss was detected during this window, but a global outage was active at the same time. The connectivity issue is network-wide — not caused by this device. See the global outage banner above.'}
         </p>
       ) : (
         <>

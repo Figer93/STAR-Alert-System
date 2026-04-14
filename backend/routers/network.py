@@ -275,7 +275,7 @@ class InvestigateMetrics(BaseModel):
 
 class Hypothesis(BaseModel):
     likely_cause: Literal[
-        "cable_or_nic", "wan_issue", "firewall_drop", "server_side",
+        "cable_or_nic", "wan_issue", "wan_instability", "firewall_drop", "server_side",
         "wifi_signal", "healthy", "unknown",
     ]
     confidence: Literal["high", "medium", "low"]
@@ -578,6 +578,21 @@ def _compute_hypothesis(
             recommended_action=(
                 "Inspect cable and NIC. Gateway is reachable so this is "
                 "likely a local layer-1 fault on this specific port."
+            ),
+        )
+
+    # Rule 3a: both gateway and WAN have equal packet loss → infrastructure-wide, not device-specific
+    if gateway_loss > 0.0 and wan_loss > 0.0 and abs(gateway_loss - wan_loss) <= 5.0:
+        return Hypothesis(
+            likely_cause="wan_instability",
+            confidence="high",
+            evidence=[
+                f"Gateway loss: {gateway_loss:.1f}%  ·  WAN loss: {wan_loss:.1f}%",
+                "Matching loss on both gateway and WAN targets indicates infrastructure-wide instability.",
+            ],
+            recommended_action=(
+                "No device-specific action required. "
+                "WAN instability is affecting the whole network — monitor for a global incident."
             ),
         )
 
