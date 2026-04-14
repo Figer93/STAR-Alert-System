@@ -39,14 +39,22 @@ log = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-BACKEND_URL   = os.environ["BACKEND_URL"]
-UNIFI_URL     = os.environ["UNIFI_URL"].rstrip("/")
-UNIFI_PORT    = os.environ.get("UNIFI_PORT", "8443")
-UNIFI_USER    = os.environ["UNIFI_USER"]
-UNIFI_PASS    = os.environ["UNIFI_PASS"]
-UNIFI_SITE    = os.environ.get("UNIFI_SITE", "default")
-VERIFY_SSL    = os.environ.get("UNIFI_VERIFY_SSL", "false").lower() not in ("false", "0", "no")
-POLL_INTERVAL = max(60, int(os.environ.get("POLL_INTERVAL", "60")))
+BACKEND_URL     = os.environ["BACKEND_URL"]
+UNIFI_URL       = os.environ["UNIFI_URL"].rstrip("/")
+UNIFI_PORT      = os.environ.get("UNIFI_PORT", "8443")
+UNIFI_USER      = os.environ["UNIFI_USER"]
+UNIFI_PASS      = os.environ["UNIFI_PASS"]
+UNIFI_SITE      = os.environ.get("UNIFI_SITE", "default")
+VERIFY_SSL      = os.environ.get("UNIFI_VERIFY_SSL", "false").lower() not in ("false", "0", "no")
+POLL_INTERVAL   = max(60, int(os.environ.get("POLL_INTERVAL", "60")))
+
+# Gateway IPs — used to assign device_type="gateway" regardless of hostname
+WAN1_GATEWAY_IP = os.environ.get("WAN1_GATEWAY_IP", "")
+WAN2_GATEWAY_IP = os.environ.get("WAN2_GATEWAY_IP", "")
+LAN_GATEWAY_IP  = os.environ.get("LAN_GATEWAY_IP", "10.2.1.253")
+_GATEWAY_IPS: frozenset[str] = frozenset(
+    ip for ip in (WAN1_GATEWAY_IP, WAN2_GATEWAY_IP, LAN_GATEWAY_IP) if ip
+)
 
 _BASE = f"{UNIFI_URL}:{UNIFI_PORT}"
 
@@ -238,24 +246,28 @@ def _parse_switch_ports(
 
 # UniFi device type field → device_registry device_type
 _UNIFI_DEVICE_TYPE_MAP: dict[str, str] = {
-    "uap": "ap",
-    "usw": "server",   # switches are critical infrastructure
-    "ugw": "server",   # gateways are critical infrastructure
+    "uap": "network_infrastructure",
+    "usw": "network_infrastructure",
+    "ugw": "gateway",
+    "udm": "gateway",
 }
 
 # Hostname substrings → device_type (checked case-insensitively, first match wins)
 _HOSTNAME_PATTERNS: list[tuple[tuple[str, ...], str]] = [
-    (("IPHONE", "IPAD", "GALAXY", "ANDROID", "WATCH", "PIXEL"), "mobile"),
-    (("STAR-LT", "-LT-", "LAPTOP", "MACBOOK", "THINKPAD", "SURFACE"), "workstation"),
-    (("STAR-D", "DESKTOP", "-PC-", "IMAC"), "workstation"),
+    (("USW", "UAP", "UDM", "UNIFI"), "network_infrastructure"),
+    (("IPHONE", "IPAD", "ANDROID", "GALAXY", "WATCH", "PIXEL"), "mobile"),
+    (("STAR-LT", "-LT-", "LAPTOP", "MACBOOK", "MAC", "THINKPAD", "SURFACE"), "workstation"),
+    (("STAR-D", "DESKTOP", "-PC-", "IMAC"), "desktop"),
     (("LT",), "workstation"),   # STAR naming: STAR-LT01, LT-JOHN, etc.
     (("PRINTER", "BRWA", "BROTHER", "HP-", "CANON", "RICOH", "XEROX"), "printer"),
     (("SERVER", "SRV-", "NAS", "SYNOLOGY", "QNAP", "FILESERVER"), "server"),
 ]
 
 
-def _detect_client_type(hostname: str) -> str:
-    """Infer device_type from a client hostname using STAR naming conventions."""
+def _detect_client_type(hostname: str, ip: str = "") -> str:
+    """Infer device_type from IP (takes priority) then hostname patterns."""
+    if ip and ip in _GATEWAY_IPS:
+        return "gateway"
     if not hostname:
         return "unknown"
     h = hostname.upper()
@@ -286,7 +298,7 @@ def _parse_clients(stations: list[dict]) -> list[dict]:
             "mac":         mac,
             "ip":          ip,
             "hostname":    hostname,
-            "device_type": _detect_client_type(hostname),
+            "device_type": _detect_client_type(hostname, ip),
             "is_online":   True,
             "last_seen":   datetime.now(timezone.utc).isoformat(),
             "switch_id":   sw_mac,

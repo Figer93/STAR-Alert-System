@@ -4,7 +4,7 @@ import {
   Search, Monitor, Server, Printer, Wifi as WifiIcon,
   HelpCircle, ChevronUp, ChevronDown, ChevronsUpDown,
   ExternalLink, Edit2, Check, X, Trash2, AlertTriangle,
-  RefreshCw, Download,
+  RefreshCw, Download, Router, Smartphone, Network, Cpu,
 } from 'lucide-react'
 import { Drawer } from 'vaul'
 import { TextScramble } from '../../components/TextScramble'
@@ -56,21 +56,28 @@ interface InvestigateTimeline {
 
 type SortCol      = 'hostname' | 'ip' | 'last_seen' | 'device_type' | 'is_online'
 type StatusFilter = 'all' | 'online' | 'offline' | 'unknown' | 'wired' | 'wireless'
-type DeviceType   = 'workstation' | 'server' | 'printer' | 'ap' | 'unknown'
+type DeviceType   = 'workstation' | 'desktop' | 'server' | 'printer' | 'ap' | 'gateway' | 'mobile' | 'network_infrastructure' | 'unknown'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const BASE = (import.meta.env.VITE_API_URL ?? '') + '/api/network'
 
 const TYPE_META: Record<string, { label: string; Icon: React.ComponentType<{ size?: number }> }> = {
-  workstation: { label: 'Workstation',   Icon: Monitor },
-  server:      { label: 'Server',        Icon: Server },
-  printer:     { label: 'Printer',       Icon: Printer },
-  ap:          { label: 'Access Point',  Icon: WifiIcon },
-  unknown:     { label: 'Unknown',       Icon: HelpCircle },
+  workstation:            { label: 'Workstation',    Icon: Monitor },
+  desktop:                { label: 'Desktop',        Icon: Cpu },
+  server:                 { label: 'Server',         Icon: Server },
+  printer:                { label: 'Printer',        Icon: Printer },
+  ap:                     { label: 'Access Point',   Icon: WifiIcon },
+  gateway:                { label: 'Gateway',        Icon: Router },
+  mobile:                 { label: 'Mobile',         Icon: Smartphone },
+  network_infrastructure: { label: 'Network Device', Icon: Network },
+  unknown:                { label: 'Unknown',        Icon: HelpCircle },
 }
 
-const DEVICE_TYPES: DeviceType[] = ['workstation', 'server', 'printer', 'ap', 'unknown']
+const DEVICE_TYPES: DeviceType[] = [
+  'workstation', 'desktop', 'server', 'printer', 'ap',
+  'gateway', 'mobile', 'network_infrastructure', 'unknown',
+]
 
 const EVENT_COLORS: Record<string, string> = {
   device_offline:  'var(--red)',
