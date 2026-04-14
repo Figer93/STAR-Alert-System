@@ -244,6 +244,12 @@ class DeviceDetail(BaseModel):
     port_errors_24h: list[dict[str, Any]]
     latency_to_gateway_24h: list[dict[str, Any]]
     incidents: list[dict[str, Any]]
+    # NinjaRMM-enriched fields
+    os_name: Optional[str] = None
+    last_logged_in_user: Optional[str] = None
+    serial: Optional[str] = None
+    ninja_online: Optional[bool] = None
+    disk_free_pct: Optional[float] = None
 
 
 class TimelineEvent(BaseModel):
@@ -324,6 +330,13 @@ class DeviceRow(BaseModel):
     device_type: Optional[str]
     notes: Optional[str]
     is_wired: Optional[bool] = None
+    # NinjaRMM-enriched fields
+    ninja_id: Optional[int] = None
+    os_name: Optional[str] = None
+    last_logged_in_user: Optional[str] = None
+    serial: Optional[str] = None
+    ninja_online: Optional[bool] = None
+    disk_free_pct: Optional[float] = None
 
 
 class DeviceUpdate(BaseModel):
@@ -1266,7 +1279,9 @@ async def list_devices(db: AsyncSession = Depends(get_db)):
         SELECT
             d.ip::text AS ip, d.mac, d.hostname, d.switch_id,
             d.port_id, d.last_seen, d.first_seen, d.is_online,
-            d.device_type, d.notes, d.is_wired
+            d.device_type, d.notes, d.is_wired,
+            d.ninja_id, d.os_name, d.last_logged_in_user,
+            d.serial, d.ninja_online, d.disk_free_pct
         FROM device_registry d
         WHERE NOT (d.ip::text LIKE '169.254.%')
         ORDER BY d.last_seen DESC NULLS LAST
@@ -1340,7 +1355,8 @@ async def get_device(ip: str, db: AsyncSession = Depends(get_db)):
 
     dev_rows = await _exec(db,
         "SELECT ip::text AS ip, mac, hostname, switch_id, port_id, "
-        "last_seen, first_seen, is_online, device_type, notes "
+        "last_seen, first_seen, is_online, device_type, notes, "
+        "os_name, last_logged_in_user, serial, ninja_online, disk_free_pct "
         "FROM device_registry WHERE ip::text = :ip",
         {"ip": ip})
     if not dev_rows:
@@ -1450,6 +1466,11 @@ async def get_device(ip: str, db: AsyncSession = Depends(get_db)):
         port_errors_24h=_serialise(port_errors_24h),
         latency_to_gateway_24h=_serialise(latency_24h),
         incidents=_serialise(incidents),
+        os_name=dev.get("os_name"),
+        last_logged_in_user=dev.get("last_logged_in_user"),
+        serial=dev.get("serial"),
+        ninja_online=dev.get("ninja_online"),
+        disk_free_pct=dev.get("disk_free_pct"),
     )
 
 

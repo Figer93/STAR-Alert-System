@@ -314,6 +314,14 @@ async def lifespan(app: FastAPI):
         logger.exception("Failed to start UniFi polling loop")
         unifi_task = None
 
+    # NinjaRMM sync loop (no-op if NINJA_CLIENT_ID / NINJA_CLIENT_SECRET not set)
+    try:
+        from backend.services.ninja_sync import ninja_sync_loop
+        ninja_task = asyncio.create_task(ninja_sync_loop())
+    except Exception:
+        logger.exception("Failed to start NinjaRMM sync loop")
+        ninja_task = None
+
     yield
 
     broadcast_task.cancel()
@@ -323,6 +331,8 @@ async def lifespan(app: FastAPI):
     retention_task.cancel()
     if unifi_task:
         unifi_task.cancel()
+    if ninja_task:
+        ninja_task.cancel()
     if syslog_transport:
         syslog_transport.close()
         logger.info("Syslog listener closed")

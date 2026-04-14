@@ -12,18 +12,25 @@ import { TextScramble } from '../../components/TextScramble'
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface DeviceRow {
-  ip:          string
-  mac:         string | null
-  hostname:    string | null
-  switch_id:   string | null
-  switch_name: string | null
-  port_id:     string | null
-  last_seen:   string | null
-  first_seen:  string | null
-  is_online:   boolean
-  device_type: string | null
-  notes:       string | null
-  is_wired:    boolean | null
+  ip:                  string
+  mac:                 string | null
+  hostname:            string | null
+  switch_id:           string | null
+  switch_name:         string | null
+  port_id:             string | null
+  last_seen:           string | null
+  first_seen:          string | null
+  is_online:           boolean
+  device_type:         string | null
+  notes:               string | null
+  is_wired:            boolean | null
+  // NinjaRMM-enriched fields
+  ninja_id:            number | null
+  os_name:             string | null
+  last_logged_in_user: string | null
+  serial:              string | null
+  ninja_online:        boolean | null
+  disk_free_pct:       number | null
 }
 
 interface DeviceDetail {
@@ -41,6 +48,12 @@ interface DeviceDetail {
   port_errors_24h:        Array<{ time: string; rx_errors: number; tx_errors: number }>
   latency_to_gateway_24h: Array<{ time: string; avg_rtt: number | null }>
   incidents:              Array<Record<string, unknown>>
+  // NinjaRMM-enriched fields
+  os_name:             string | null
+  last_logged_in_user: string | null
+  serial:              string | null
+  ninja_online:        boolean | null
+  disk_free_pct:       number | null
 }
 
 interface TimelineEvent {
@@ -593,6 +606,9 @@ function DevicePanel({
                   ...(port ? [
                     ['Speed',    port.speed ? `${port.speed} Mbps` : '--'],
                     ['PoE',      port.poe_watts ? `${port.poe_watts}W` : 'None'],
+                  ] : []),
+                  ...(detail?.os_name ? [
+                    ['OS', detail.os_name],
                   ] : []),
                 ].map(([k, v]) => (
                   <div key={k}>
@@ -1225,20 +1241,42 @@ export default function Devices() {
                                 </span>
                               </div>
                             ) : (
-                              <button
-                                onClick={e => {
-                                  e.stopPropagation()
-                                  navigate(`/network/investigate?ip=${encodeURIComponent(primary.ip)}`)
-                                }}
-                                style={{
-                                  background: 'none', border: 'none', cursor: 'pointer',
-                                  color: 'var(--blue)', fontWeight: 500, fontSize: 14,
-                                  padding: 0, display: 'flex', alignItems: 'center', gap: 5,
-                                }}
-                              >
-                                <TextScramble text={displayName(primary.hostname, primary.mac)} />
-                                <ExternalLink size={11} style={{ opacity: 0.6 }} />
-                              </button>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                                  <button
+                                    onClick={e => {
+                                      e.stopPropagation()
+                                      navigate(`/network/investigate?ip=${encodeURIComponent(primary.ip)}`)
+                                    }}
+                                    style={{
+                                      background: 'none', border: 'none', cursor: 'pointer',
+                                      color: 'var(--blue)', fontWeight: 500, fontSize: 14,
+                                      padding: 0, display: 'flex', alignItems: 'center', gap: 5,
+                                    }}
+                                  >
+                                    <TextScramble text={displayName(primary.hostname, primary.mac)} />
+                                    <ExternalLink size={11} style={{ opacity: 0.6 }} />
+                                  </button>
+                                  {primary.disk_free_pct !== null && primary.disk_free_pct < 15 && (
+                                    <span style={{
+                                      fontSize: 10, fontWeight: 600,
+                                      background: 'rgba(239,68,68,0.15)',
+                                      color: '#ef4444',
+                                      border: '1px solid rgba(239,68,68,0.35)',
+                                      borderRadius: 4,
+                                      padding: '1px 5px',
+                                      whiteSpace: 'nowrap',
+                                    }}>
+                                      Low disk
+                                    </span>
+                                  )}
+                                </div>
+                                {primary.last_logged_in_user && (
+                                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                                    {primary.last_logged_in_user}
+                                  </span>
+                                )}
+                              </div>
                             )}
                             {group.isDuplicate && <InterfacesBadge count={group.entries.length} />}
                             {!group.isDuplicate && group.isSharedName && <CommonNameIcon />}
