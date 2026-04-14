@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  Plug, Search, X, ExternalLink,
+  Plug, Search, X,
   ArrowDown, ArrowUp, ChevronUp, ChevronDown,
   Server, Monitor, Wifi as WifiIcon, Router, HardDrive, Download,
 } from 'lucide-react'
@@ -50,7 +50,7 @@ const STATUS_COLORS: Record<PortStatus['status'], string> = {
 }
 
 const PORTS_PER_ROW    = 24
-const HIGH_TRAFFIC_BPS = 10_000_000
+const HIGH_TRAFFIC_BPS = 1_000_000
 const PAGE_SIZE        = 25
 
 const FILTERS = ['all', 'errors', 'high_traffic', 'empty'] as const
@@ -200,9 +200,37 @@ function SwitchDiagram({
                 healthy: '0 0 6px #22c55e, 0 0 12px #22c55e40',
                 error:   '0 0 6px #ef4444',
                 warning: '0 0 6px #f59e0b',
-                uplink:  '0 0 6px #60a5fa',
+                uplink:  '0 0 6px #60a5fa, 0 0 12px #60a5fa40',
                 empty:   'none',
               }[status]
+
+              // Traffic-scaled brightness for healthy ports
+              const maxRate = p ? Math.max(p.rx_bytes_rate, p.tx_bytes_rate) : 0
+              const trafficLevel = status === 'healthy' && maxRate > 0
+                ? Math.min(maxRate / 100_000_000, 1)  // 0→1 over 0–100 Mbps
+                : 0
+              // Idle healthy ports get dim bg (~20% alpha), busy ports ramp up to ~70%
+              const healthyAlpha = status === 'healthy'
+                ? Math.round(20 + trafficLevel * 50).toString(16).padStart(2, '0')
+                : '33'
+
+              const portBg = status === 'empty'
+                ? '#1c1c1f'
+                : active
+                  ? color
+                  : status === 'healthy'
+                    ? `${color}${healthyAlpha}`
+                    : `${color}33`
+
+              const isUplink = status === 'uplink'
+              const portWidth  = isUplink ? 48 : 40
+              const portHeight = isUplink ? 88 : 80
+              const portBorder = isUplink
+                ? `2px solid ${active ? color : `${color}99`}`
+                : `1px solid ${active ? color : `${color}55`}`
+              const portShadow = isUplink && !active
+                ? `inset 0 0 0 1px ${color}33, 0 0 8px ${color}22`
+                : undefined
 
               return (
                 <div
@@ -213,11 +241,12 @@ function SwitchDiagram({
                   onMouseMove={e  => p && tip && setTip({ port: p, x: e.clientX, y: e.clientY })}
                   onMouseLeave={() => setTip(null)}
                   style={{
-                    width:        40,
-                    height:       80,
-                    borderRadius: 2,
-                    background:   status === 'empty' ? '#1c1c1f' : active ? color : `${color}33`,
-                    border:       `1px solid ${active ? color : `${color}55`}`,
+                    width:        portWidth,
+                    height:       portHeight,
+                    borderRadius: isUplink ? 3 : 2,
+                    background:   portBg,
+                    border:       portBorder,
+                    boxShadow:    portShadow,
                     outline:      active ? '1px solid #60a5fa' : 'none',
                     outlineOffset: active ? 2 : 0,
                     cursor:       p ? 'pointer' : 'default',
@@ -408,9 +437,21 @@ function PortDetailDrawer({
                     <span style={{ color: 'var(--accent)' }}>
                       <DeviceIcon type={device?.device_type} />
                     </span>
-                    <span style={{ fontWeight: 600, color: 'var(--text-head)', fontSize: 13, flex: 1 }}>
-                      {device?.hostname ?? effectiveDeviceName(p) ?? 'Unknown Device'}
-                    </span>
+                    {p.device_ip ? (
+                      <span
+                        onClick={() => { navigate(`/network/investigate?ip=${p.device_ip}`); onOpenChange(false) }}
+                        style={{
+                          fontWeight: 600, color: 'var(--accent)', fontSize: 13, flex: 1,
+                          cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: 3,
+                        }}
+                      >
+                        {device?.hostname ?? effectiveDeviceName(p) ?? 'Unknown Device'}
+                      </span>
+                    ) : (
+                      <span style={{ fontWeight: 600, color: 'var(--text-head)', fontSize: 13, flex: 1 }}>
+                        {device?.hostname ?? effectiveDeviceName(p) ?? 'Unknown Device'}
+                      </span>
+                    )}
                     {device && (
                       <span style={{
                         width: 7, height: 7, borderRadius: '50%',
@@ -488,29 +529,6 @@ function PortDetailDrawer({
               )}
             </div>
 
-            {/* Investigate */}
-            {p.device_ip && (
-              <button
-                onClick={() => { navigate(`/network/investigate?ip=${p.device_ip}`); onOpenChange(false) }}
-                style={{
-                  display:        'flex',
-                  alignItems:     'center',
-                  justifyContent: 'center',
-                  gap:            6,
-                  padding:        '9px 16px',
-                  borderRadius:   5,
-                  background:     'var(--accent-dim)',
-                  border:         '1px solid var(--border-bright)',
-                  color:          'var(--accent)',
-                  fontWeight:     600,
-                  fontSize:       13,
-                  cursor:         'pointer',
-                }}
-              >
-                <ExternalLink size={13} />
-                Investigate Device
-              </button>
-            )}
           </div>
         </Drawer.Content>
       </Drawer.Portal>
