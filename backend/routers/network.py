@@ -1644,14 +1644,21 @@ async def investigate(
         for r in raw_metrics_rows
     ]
 
-    # Gateway latency in window (includes WAN/DNS targets for full picture)
+    # Gateway latency in window — match by IP only.
+    # The collector stores the LAN gateway (10.2.1.253) with target_type='internal',
+    # NOT 'gateway', so filtering by target_type would miss all rows.
+    from backend.config import settings as _settings
+    _gw_ip = _settings.LAN_GATEWAY_IP or "10.2.1.253"
+    logger.info("investigate gateway latency: gw_ip=%s start=%s end=%s", _gw_ip, start, end)
     gw_rows = await _exec(db, """
         SELECT AVG(packet_loss_pct) AS avg_loss,
                AVG(rtt_ms)          AS avg_rtt
         FROM latency_metrics
-        WHERE target_type IN ('gateway', 'wan', 'dns')
+        WHERE target_ip::text = :gw_ip
           AND time BETWEEN :start AND :end
-    """, params)
+    """, {**params, "gw_ip": _gw_ip})
+    logger.info("investigate gateway latency: returned %d rows, avg_loss=%s avg_rtt=%s",
+                len(gw_rows), (gw_rows[0] or {}).get("avg_loss"), (gw_rows[0] or {}).get("avg_rtt"))
     gateway_loss = float((gw_rows[0] or {}).get("avg_loss") or 0)
     gateway_rtt  = (gw_rows[0] or {}).get("avg_rtt")
 
