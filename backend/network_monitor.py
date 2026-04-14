@@ -119,6 +119,11 @@ _global_latency_recover_consecutive: int          = 0   # consecutive cycles whe
 _wan_loss_consecutive: dict[str, int] = {}  # ip → consecutive cycles >50% loss
 _wan_loss_recover:     dict[str, int] = {}  # ip → consecutive cycles ≤50% loss
 
+# Per-device offline consecutive tracking (flap protection).
+# An alert fires only after a device has been stale for N consecutive cycles.
+_device_offline_consecutive:   dict[str, int] = {}   # ip → cycles seen stale while is_online=true
+_DEVICE_OFFLINE_ALERT_THRESHOLD = 3                  # require 3 × 60 s ≈ 3 min before alerting
+
 
 # ── Telegram rate limiting ────────────────────────────────────────────────────
 # Per-device cooldown: at most 1 new-incident alert per (category, entity) per hour.
@@ -1015,8 +1020,12 @@ async def _check_devices_offline(db: AsyncSession) -> None:
     """
     Check 3: Devices still marked is_online=true whose last_seen is stale.
 
-    ALL stale devices are marked is_online=false in device_registry.
-    Only devices matching these criteria generate an incident and Telegram alert:
+    Flap protection: a device must be stale for _DEVICE_OFFLINE_ALERT_THRESHOLD
+    consecutive 60-second cycles (~3 minutes) before an incident and Telegram
+    alert are fired.  The is_online flag is updated immediately on the first
+    stale cycle; alerting is deferred until the threshold is reached.
+
+    Only devices matching these criteria generate an incident/alert:
       - device_type IN ('server', 'ap')   — critical infrastructure
       - is_critical = true                — manually flagged by operators
 
@@ -1031,32 +1040,57 @@ async def _check_devices_offline(db: AsyncSession) -> None:
           AND last_seen < NOW() - INTERVAL '{_DEVICE_STALE_MINUTES} minutes'
     """)
 
+    stale_ips: set[str] = set()
+
     for device in stale:
         ip          = device["ip"]
         if ip.startswith("169.254."):
             continue
+        stale_ips.add(ip)
+
         hostname    = device.get("hostname") or ip
         device_type = device.get("device_type") or "unknown"
         is_critical = bool(device.get("is_critical"))
 
-        # Always mark offline
-        await _exec(db,
-            "UPDATE device_registry SET is_online = false WHERE ip::text = :ip",
-            {"ip": ip})
-        await _write_event(
-            db,
-            "device_offline",
-            device_ip=ip,
-            description=f"{hostname} ({ip}) went offline",
-            metadata={"device_type": device_type, "hostname": hostname},
-        )
-        await db.commit()
+        # Increment consecutive stale counter
+        _device_offline_consecutive[ip] = _device_offline_consecutive.get(ip, 0) + 1
+        cycle_count = _device_offline_consecutive[ip]
 
-        # Only alert for critical infrastructure and manually flagged devices
+        # Always mark offline on first stale detection
+        if cycle_count == 1:
+            await _exec(db,
+                "UPDATE device_registry SET is_online = false WHERE ip::text = :ip",
+                {"ip": ip})
+            await _write_event(
+                db,
+                "device_offline",
+                device_ip=ip,
+                description=f"{hostname} ({ip}) went offline",
+                metadata={"device_type": device_type, "hostname": hostname},
+            )
+            await db.commit()
+            logger.debug(
+                "Device offline (cycle 1/%d, alert deferred): %s (%s) [%s]",
+                _DEVICE_OFFLINE_ALERT_THRESHOLD, hostname, ip, device_type,
+            )
+
+        # Only alert for critical infrastructure and manually flagged devices,
+        # and only after the consecutive threshold is reached.
         if device_type not in _ALERTABLE_DEVICE_TYPES and not is_critical:
             logger.debug("Device offline (no alert — type=%s): %s (%s)",
                          device_type, hostname, ip)
             continue
+
+        if cycle_count < _DEVICE_OFFLINE_ALERT_THRESHOLD:
+            logger.debug(
+                "Device offline (flap guard %d/%d): %s (%s) — deferring alert",
+                cycle_count, _DEVICE_OFFLINE_ALERT_THRESHOLD, hostname, ip,
+            )
+            continue
+
+        # Threshold reached — proceed with incident creation.
+        # Reset counter so we don't re-enter this branch every cycle.
+        _device_offline_consecutive.pop(ip, None)
 
         # Dedup by root_cause — one open DEVICE_OFFLINE incident per IP.
         # Mirrors the global WAN incident dedup pattern.  If an open incident
@@ -1123,6 +1157,12 @@ async def _check_devices_offline(db: AsyncSession) -> None:
             msg += f"\n{link}"
         await _rate_limited_telegram(msg, dedup_key=f"device_offline:{ip}")
         logger.warning("Device offline (alert sent): %s (%s) [%s]", hostname, ip, device_type)
+
+    # Reset consecutive counters for any device that is no longer stale
+    # (came back online before the alert threshold was reached).
+    for ip in list(_device_offline_consecutive.keys()):
+        if ip not in stale_ips:
+            _device_offline_consecutive.pop(ip, None)
 
     # Auto-resolve incidents for devices that have come back online.
     # Fetch ALL currently fresh-online IPs in one query, then check membership

@@ -341,7 +341,7 @@ async def ingest_devices(
 
     Expected fields per row:
       mac, ip, hostname, device_type, is_online, last_seen,
-      switch_id (optional), port_id (optional)
+      switch_id (optional), port_id (optional), is_wired (optional)
     """
     accepted = 0
 
@@ -349,14 +349,16 @@ async def ingest_devices(
         if str(row.get("ip") or "").startswith("169.254."):
             continue
         try:
+            is_wired_val = row.get("is_wired")
+            is_wired = bool(is_wired_val) if is_wired_val is not None else None
             await db.execute(
                 text("""
                     INSERT INTO device_registry
                         (mac, ip, hostname, device_type, is_online,
-                         last_seen, switch_id, port_id)
+                         last_seen, switch_id, port_id, is_wired)
                     VALUES
                         (:mac, CAST(:ip AS INET), :hostname, :device_type, :is_online,
-                         :last_seen, :switch_id, :port_id)
+                         :last_seen, :switch_id, :port_id, :is_wired)
                     ON CONFLICT (ip) DO UPDATE SET
                         mac         = EXCLUDED.mac,
                         hostname    = EXCLUDED.hostname,
@@ -364,7 +366,8 @@ async def ingest_devices(
                         is_online   = EXCLUDED.is_online,
                         last_seen   = EXCLUDED.last_seen,
                         switch_id   = COALESCE(EXCLUDED.switch_id, device_registry.switch_id),
-                        port_id     = COALESCE(EXCLUDED.port_id, device_registry.port_id)
+                        port_id     = COALESCE(EXCLUDED.port_id, device_registry.port_id),
+                        is_wired    = COALESCE(EXCLUDED.is_wired, device_registry.is_wired)
                 """),
                 {
                     "mac":         row.get("mac"),
@@ -375,6 +378,7 @@ async def ingest_devices(
                     "last_seen":   _parse_ts(row.get("last_seen")),
                     "switch_id":   row.get("switch_id"),
                     "port_id":     str(row.get("port_id")) if row.get("port_id") is not None else None,
+                    "is_wired":    is_wired,
                 },
             )
             accepted += 1

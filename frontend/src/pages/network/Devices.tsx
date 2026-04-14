@@ -23,6 +23,7 @@ interface DeviceRow {
   is_online:   boolean
   device_type: string | null
   notes:       string | null
+  is_wired:    boolean | null
 }
 
 interface DeviceDetail {
@@ -54,7 +55,7 @@ interface InvestigateTimeline {
 }
 
 type SortCol      = 'hostname' | 'ip' | 'last_seen' | 'device_type' | 'is_online'
-type StatusFilter = 'all' | 'online' | 'offline' | 'unknown'
+type StatusFilter = 'all' | 'online' | 'offline' | 'unknown' | 'wired' | 'wireless'
 type DeviceType   = 'workstation' | 'server' | 'printer' | 'ap' | 'unknown'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -671,9 +672,11 @@ export default function Devices() {
   const filtered = useMemo(() => {
     const q = search.toLowerCase().trim()
     return devices.filter(d => {
-      if (statusFilter === 'online'  && !d.is_online) return false
-      if (statusFilter === 'offline' && d.is_online)  return false
-      if (statusFilter === 'unknown' && d.device_type !== null) return false
+      if (statusFilter === 'online'    && !d.is_online) return false
+      if (statusFilter === 'offline'   && d.is_online)  return false
+      if (statusFilter === 'unknown'   && d.device_type !== null) return false
+      if (statusFilter === 'wired'     && d.is_wired !== true)  return false
+      if (statusFilter === 'wireless'  && d.is_wired !== false) return false
       if (q) {
         const hay = [d.hostname, d.ip, d.mac, d.switch_id, d.port_id, d.device_type]
           .filter(Boolean).join(' ').toLowerCase()
@@ -748,19 +751,23 @@ export default function Devices() {
   // ── Counts for filter pills ────────────────────────────────────────────────
 
   const counts = useMemo(() => ({
-    all:     devices.length,
-    online:  devices.filter(d => d.is_online).length,
-    offline: devices.filter(d => !d.is_online).length,
-    unknown: devices.filter(d => d.device_type === null).length,
+    all:      devices.length,
+    online:   devices.filter(d => d.is_online).length,
+    offline:  devices.filter(d => !d.is_online).length,
+    unknown:  devices.filter(d => d.device_type === null).length,
+    wired:    devices.filter(d => d.is_wired === true).length,
+    wireless: devices.filter(d => d.is_wired === false).length,
   }), [devices])
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
   const filterPills: { key: StatusFilter; label: string }[] = [
-    { key: 'all',     label: `All (${counts.all})` },
-    { key: 'online',  label: `Online (${counts.online})` },
-    { key: 'offline', label: `Offline (${counts.offline})` },
-    { key: 'unknown', label: `Unknown type (${counts.unknown})` },
+    { key: 'all',      label: `All (${counts.all})` },
+    { key: 'online',   label: `Online (${counts.online})` },
+    { key: 'offline',  label: `Offline (${counts.offline})` },
+    { key: 'wired',    label: `Wired (${counts.wired})` },
+    { key: 'wireless', label: `Wi-Fi (${counts.wireless})` },
+    { key: 'unknown',  label: `Unknown type (${counts.unknown})` },
   ]
 
   return (

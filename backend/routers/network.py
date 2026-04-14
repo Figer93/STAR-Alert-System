@@ -323,6 +323,7 @@ class DeviceRow(BaseModel):
     is_online: bool
     device_type: Optional[str]
     notes: Optional[str]
+    is_wired: Optional[bool] = None
 
 
 class DeviceUpdate(BaseModel):
@@ -1250,7 +1251,7 @@ async def list_devices(db: AsyncSession = Depends(get_db)):
         SELECT
             d.ip::text AS ip, d.mac, d.hostname, d.switch_id,
             d.port_id, d.last_seen, d.first_seen, d.is_online,
-            d.device_type, d.notes
+            d.device_type, d.notes, d.is_wired
         FROM device_registry d
         WHERE NOT (d.ip::text LIKE '169.254.%')
         ORDER BY d.last_seen DESC NULLS LAST
