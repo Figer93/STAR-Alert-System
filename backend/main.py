@@ -238,11 +238,11 @@ async def _seed_channel_settings() -> None:
 
 async def _retention_cleanup():
     """
-    Purge stale time-series rows on startup, then once every 24 hours.
+    Purge stale time-series rows on startup, then once every hour.
 
     Retention policy:
       latency_metrics      — keep 2 days
-      switch_port_metrics  — keep 6 hours
+      switch_port_metrics  — keep 24 hours
       network_incidents    — keep 30 days (resolved only; open incidents are kept forever)
     """
     from sqlalchemy import text
@@ -258,7 +258,7 @@ async def _retention_cleanup():
                     "DELETE FROM latency_metrics WHERE time < NOW() - INTERVAL '2 days'"
                 ))
                 await db.execute(text(
-                    "DELETE FROM switch_port_metrics WHERE time < NOW() - INTERVAL '6 hours'"
+                    "DELETE FROM switch_port_metrics WHERE time < NOW() - INTERVAL '24 hours'"
                 ))
                 await db.execute(text(
                     "DELETE FROM network_incidents "
@@ -270,10 +270,10 @@ async def _retention_cleanup():
         except Exception:
             logger.exception("Retention cleanup error")
 
-    # Run immediately on startup to clear any backlog, then daily
+    # Run immediately on startup to clear any backlog, then hourly
     await _run_cleanup()
     while True:
-        await asyncio.sleep(86_400)
+        await asyncio.sleep(3_600)
         await _run_cleanup()
 
 

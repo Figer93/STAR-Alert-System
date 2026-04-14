@@ -1586,13 +1586,13 @@ async def _check_traffic_anomaly(db: AsyncSession) -> None:
 
 # ── Maintenance: cleanup + DB size ────────────────────────────────────────────
 
-_RETENTION_HOURS_PORT_METRICS = 12   # hours — switch_port_metrics
+_RETENTION_HOURS_PORT_METRICS = 24   # hours — switch_port_metrics
 _RETENTION_HOURS_LATENCY = 168       # hours — latency_metrics (7 days for graph history)
-_RETENTION_HOURS_EMERGENCY = 1       # hours — both metrics tables when DB > 400 MB
+_RETENTION_HOURS_EMERGENCY = 1       # hours — both metrics tables when DB > 1.8 GB
 _RETENTION_DAYS_EVENTS = 90          # days  — network_events (timeline history)
 _RETENTION_DAYS_PORT_ERRORS = 90     # days  — port_error_events
-_DB_SIZE_ALERT_MB = 400              # MB — threshold for Telegram alert
-_DB_SIZE_LIMIT_MB = 500              # MB — shown in alert message
+_DB_SIZE_ALERT_MB = 1_800            # MB — threshold for Telegram alert (~1.8 GB)
+_DB_SIZE_LIMIT_MB = 2_048            # MB — shown in alert message (2 GB Railway limit)
 
 
 async def _cleanup_old_data(db: AsyncSession, *, emergency: bool = False) -> None:
@@ -1635,7 +1635,7 @@ async def _cleanup_old_data(db: AsyncSession, *, emergency: bool = False) -> Non
 
 async def _check_db_size(db: AsyncSession) -> None:
     """
-    Check DB size every 30 minutes.  If > 400 MB send a Telegram alert and
+    Check DB size every 30 minutes.  If > 1.8 GB send a Telegram alert and
     run emergency cleanup (1-hour retention on metrics tables).
     """
     result = await db.execute(text("SELECT pg_database_size(current_database())"))

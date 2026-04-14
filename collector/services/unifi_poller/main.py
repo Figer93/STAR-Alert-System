@@ -46,7 +46,7 @@ UNIFI_USER    = os.environ["UNIFI_USER"]
 UNIFI_PASS    = os.environ["UNIFI_PASS"]
 UNIFI_SITE    = os.environ.get("UNIFI_SITE", "default")
 VERIFY_SSL    = os.environ.get("UNIFI_VERIFY_SSL", "false").lower() not in ("false", "0", "no")
-POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "60"))
+POLL_INTERVAL = max(60, int(os.environ.get("POLL_INTERVAL", "60")))
 
 _BASE = f"{UNIFI_URL}:{UNIFI_PORT}"
 
