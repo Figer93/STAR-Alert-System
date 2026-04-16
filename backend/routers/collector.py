@@ -375,6 +375,10 @@ async def ingest_devices(
       mac, ip, hostname, device_type, is_online, last_seen,
       switch_id (optional), port_id (optional), is_wired (optional)
     """
+    VALID_DEVICE_TYPES = {
+        "workstation", "server", "printer", "ap", "unknown",
+        "desktop", "network_infrastructure", "gateway", "mobile",
+    }
     accepted = 0
 
     for row in payload.rows:
@@ -405,7 +409,7 @@ async def ingest_devices(
                     "mac":         row.get("mac"),
                     "ip":          row.get("ip"),
                     "hostname":    row.get("hostname"),
-                    "device_type": row.get("device_type", "unknown"),
+                    "device_type": row.get("device_type", "unknown") if row.get("device_type") in VALID_DEVICE_TYPES else "unknown",
                     "is_online":   row.get("is_online", True),
                     "last_seen":   _parse_ts(row.get("last_seen")),
                     "switch_id":   row.get("switch_id"),

@@ -65,7 +65,7 @@ def upgrade() -> None:
         sa.Column("is_online",   sa.Boolean(),                  nullable=False, server_default="false"),
         sa.Column(
             "device_type",
-            sa.Enum("workstation", "server", "printer", "ap", "unknown", name="device_type_enum"),
+            sa.Enum("workstation", "server", "printer", "ap", "unknown", "desktop", "network_infrastructure", name="device_type_enum"),
             nullable=False,
             server_default="unknown",
         ),
