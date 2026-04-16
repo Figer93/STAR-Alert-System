@@ -42,7 +42,7 @@ if _is_postgres:
             "server_settings": {"application_name": "star_alert"},
             # Railway Postgres uses a self-signed cert on its internal network;
             # ssl=True enables TLS without certificate verification.
-            "ssl": True,
+            "ssl": "require",
         },
     )
 else:
