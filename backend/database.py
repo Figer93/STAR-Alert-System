@@ -21,6 +21,7 @@ def _normalise_db_url(url: str) -> str:
     return url
 
 _DATABASE_URL = _normalise_db_url(settings.DATABASE_URL)
+logging.getLogger(__name__).info("Connecting to: %s", _DATABASE_URL.split("@")[-1])
 
 _is_postgres = "postgresql" in _DATABASE_URL
 
