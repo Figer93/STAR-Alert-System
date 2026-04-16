@@ -106,6 +106,8 @@ async def init_db() -> None:
     10-30 s to be ready) don't crash the backend before it has a chance to
     connect.
     """
+    import os
+    _log.info("RAW DATABASE_URL host: %s", os.environ.get("DATABASE_URL", "NOT SET").split("@")[-1].split("/")[0])
     from backend import models  # noqa: F401 — ensure models are registered
 
     max_attempts = 8
