@@ -15,12 +15,15 @@ _slow_query_logger = logging.getLogger("slow_query")
 # dialect.  Railway (and many PaaS providers) supply a bare postgresql:// URL
 # which SQLAlchemy maps to the sync psycopg2 driver — not installed here.
 def _normalise_db_url(url: str) -> str:
+    if url.startswith("postgresql+asyncpg://"):
+        return url  # already correct dialect
     for prefix in ("postgresql://", "postgres://"):
         if url.startswith(prefix):
             return "postgresql+asyncpg://" + url[len(prefix):]
     return url
 
 _DATABASE_URL = _normalise_db_url(settings.DATABASE_URL)
+logging.getLogger(__name__).info("DB dialect: %s", _DATABASE_URL.split("://")[0])
 logging.getLogger(__name__).info("Connecting to: %s", _DATABASE_URL.split("@")[-1])
 
 _is_postgres = "postgresql" in _DATABASE_URL
