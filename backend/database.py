@@ -40,9 +40,9 @@ if _is_postgres:
         pool_pre_ping=True,
         connect_args={
             "server_settings": {"application_name": "star_alert"},
-            # Railway Postgres uses a self-signed cert on its internal network;
-            # ssl=True enables TLS without certificate verification.
-            "ssl": "require",
+            # Railway internal network (railway.internal) does not expose SSL;
+            # only add ssl="require" for public/external URLs.
+            **({} if "railway.internal" in _DATABASE_URL else {"ssl": "require"}),
         },
     )
 else:
