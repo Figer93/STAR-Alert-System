@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import threading
 import time
@@ -39,6 +40,9 @@ if _is_postgres:
         pool_pre_ping=True,
         connect_args={
             "server_settings": {"application_name": "star_alert"},
+            # Railway Postgres uses a self-signed cert on its internal network;
+            # ssl=True enables TLS without certificate verification.
+            "ssl": True,
         },
     )
 else:
@@ -91,10 +95,30 @@ async def get_db() -> AsyncSession:
         yield session
 
 
-async def init_db():
+_log = logging.getLogger(__name__)
+
+
+async def init_db() -> None:
+    """Connect to the DB and ensure schema is present.
+
+    Retries with back-off so Railway cold-starts (where Postgres may take
+    10-30 s to be ready) don't crash the backend before it has a chance to
+    connect.
+    """
     from backend import models  # noqa: F401 — ensure models are registered
-    # create_all is idempotent (skips existing tables), so it is safe to run on
-    # both SQLite and PostgreSQL.  On PostgreSQL, migrations are applied manually
-    # via alembic upgrade head before deploying.
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+
+    max_attempts = 8
+    for attempt in range(1, max_attempts + 1):
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            return
+        except Exception as exc:
+            if attempt == max_attempts:
+                raise
+            delay = min(5 * attempt, 30)
+            _log.warning(
+                "DB init attempt %d/%d failed (%s: %s) — retrying in %ds",
+                attempt, max_attempts, type(exc).__name__, exc, delay,
+            )
+            await asyncio.sleep(delay)
