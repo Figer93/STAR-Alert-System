@@ -30,11 +30,11 @@ import aiohttp
 
 logger = logging.getLogger(__name__)
 
-_BASE_URL         = os.getenv("NINJA_BASE_URL", "https://eu.ninjarmm.com")
-_TOKEN_URL        = f"{_BASE_URL}/ws/oauth/token"
-_DEVICES_URL      = f"{_BASE_URL}/v2/devices-detailed"
-_PATCH_REPORT_URL = f"{_BASE_URL}/v2/queries/os-patch-report"
-_INTERVAL         = 600  # 10 minutes
+_BASE_URL       = os.getenv("NINJA_BASE_URL", "https://eu.ninjarmm.com")
+_TOKEN_URL      = f"{_BASE_URL}/ws/oauth/token"
+_DEVICES_URL    = f"{_BASE_URL}/v2/devices-detailed"
+_OS_PATCHES_URL = f"{_BASE_URL}/v2/queries/os-patches"
+_INTERVAL       = 600  # 10 minutes
 
 
 class _TokenCache:
@@ -116,22 +116,42 @@ async def _fetch_devices(token: str) -> list[dict[str, Any]]:
             return await resp.json()  # type: ignore[return-value]
 
 
-async def _fetch_patch_report(token: str) -> list[dict[str, Any]]:
-    timeout = aiohttp.ClientTimeout(total=30)
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept":        "application/json",
-    }
-    async with aiohttp.ClientSession() as session:
-        async with session.get(_PATCH_REPORT_URL, headers=headers, timeout=timeout, ssl=True) as resp:
-            if resp.status == 401:
-                raise PermissionError("NinjaRMM: token rejected by patch-report endpoint")
-            resp.raise_for_status()
-            data = await resp.json()
-    # API may return {"results": [...]} or a bare list
-    if isinstance(data, dict):
-        return data.get("results") or data.get("data") or []
-    return data  # type: ignore[return-value]
+async def _fetch_os_patches(token: str) -> list[dict[str, Any]]:
+    """
+    Fetch all OS patch records from /v2/queries/os-patches.
+    NinjaRMM paginates this endpoint with a cursor; we follow until exhausted.
+    Each record represents one patch on one device.
+    """
+    timeout = aiohttp.ClientTimeout(total=60)
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    all_patches: list[dict[str, Any]] = []
+    cursor: str | None = None
+
+    async with aiohttp.ClientSession() as http:
+        while True:
+            params: dict[str, Any] = {"pageSize": 1000}
+            if cursor:
+                params["cursor"] = cursor
+            async with http.get(
+                _OS_PATCHES_URL, headers=headers, params=params, timeout=timeout, ssl=True
+            ) as resp:
+                if resp.status == 401:
+                    raise PermissionError("NinjaRMM: token rejected by os-patches endpoint")
+                resp.raise_for_status()
+                data = await resp.json()
+
+            if isinstance(data, dict):
+                results = data.get("results") or data.get("data") or []
+                cursor   = data.get("cursor") or data.get("nextCursor")
+            else:
+                results = data or []
+                cursor   = None
+
+            all_patches.extend(results)
+            if not cursor or not results:
+                break
+
+    return all_patches
 
 
 async def _fetch_device_software(token: str, ninja_id: int) -> list[dict[str, Any]]:
@@ -154,42 +174,87 @@ async def _fetch_device_software(token: str, ninja_id: int) -> list[dict[str, An
 
 # ── Sync helpers ──────────────────────────────────────────────────────────────
 
-async def _sync_patch_status(token: str, session: Any) -> None:
-    """Fetch OS patch report, upsert device_patch_status, fire reboot alerts."""
+def _parse_ts(raw: Any) -> datetime | None:
+    """Parse an epoch-ms integer or ISO string into a UTC datetime."""
+    if not raw:
+        return None
+    try:
+        if isinstance(raw, (int, float)):
+            return datetime.fromtimestamp(raw / 1000, tz=timezone.utc)
+        return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+async def _sync_patch_status(
+    token: str,
+    session: Any,
+    devices_by_id: dict[int, dict[str, Any]],
+) -> None:
+    """
+    Fetch /v2/queries/os-patches (individual patch records), aggregate counts
+    by device, upsert device_patch_status, and fire reboot alerts.
+    """
     from sqlalchemy import text
 
     try:
-        rows = await _fetch_patch_report(token)
+        patch_rows = await _fetch_os_patches(token)
     except Exception:
-        logger.exception("NinjaRMM: failed to fetch patch report")
+        logger.exception("NinjaRMM: failed to fetch os-patches")
         return
 
-    upserted = 0
+    # ── Aggregate individual patch records by device ──────────────────────────
+    # NinjaRMM patch status values observed in the wild:
+    #   APPROVED, FAILED, PENDING, PENDING_APPROVAL, NOT_APPROVED, INSTALLED
+    # We treat APPROVED + INSTALLED as approved/done; PENDING* as pending;
+    # FAILED as failed.  NOT_APPROVED rows are intentionally ignored.
+    from collections import defaultdict
+    by_device: dict[int, dict[str, Any]] = defaultdict(lambda: {
+        "approved": 0, "pending": 0, "failed": 0, "last_ts": None,
+    })
+
+    for patch in patch_rows:
+        did = patch.get("deviceId") or patch.get("device_id")
+        if not did:
+            continue
+        did = int(did)
+        status = (patch.get("status") or "").upper()
+        if status in ("APPROVED", "INSTALLED"):
+            by_device[did]["approved"] += 1
+        elif "PENDING" in status:
+            by_device[did]["pending"] += 1
+        elif status == "FAILED":
+            by_device[did]["failed"] += 1
+
+        # Track most-recent patch timestamp as last_scan
+        ts = _parse_ts(patch.get("lastUpdated") or patch.get("updatedAt") or patch.get("timestamp"))
+        if ts and (by_device[did]["last_ts"] is None or ts > by_device[did]["last_ts"]):
+            by_device[did]["last_ts"] = ts
+
+    logger.info("NinjaRMM: aggregated patch data for %d devices", len(by_device))
+
+    upserted    = 0
     alerts_fired = 0
 
-    for row in rows:
+    for ninja_id, counts in by_device.items():
         try:
-            ninja_id = row.get("deviceId") or row.get("id")
-            hostname = row.get("deviceName") or row.get("hostname") or ""
-            if not ninja_id:
-                continue
+            dev      = devices_by_id.get(ninja_id, {})
+            hostname = (
+                dev.get("dnsName") or dev.get("systemName") or dev.get("hostname") or ""
+            ).split(".")[0]
 
-            # Patch counts — field names vary across NinjaRMM versions
-            patches_approved = int(row.get("approvedPatchCount") or row.get("approved") or 0)
-            patches_pending  = int(row.get("pendingPatchCount")  or row.get("pending")  or 0)
-            patches_failed   = int(row.get("failedPatchCount")   or row.get("failed")   or 0)
-            reboot_required  = bool(row.get("rebootRequired") or row.get("pendingReboot") or False)
+            patches_approved = counts["approved"]
+            patches_pending  = counts["pending"]
+            patches_failed   = counts["failed"]
+            last_scan        = counts["last_ts"]
 
-            last_scan_raw = row.get("lastScanTime") or row.get("lastScan")
-            last_scan: datetime | None = None
-            if last_scan_raw:
-                try:
-                    if isinstance(last_scan_raw, (int, float)):
-                        last_scan = datetime.fromtimestamp(last_scan_raw / 1000, tz=timezone.utc)
-                    else:
-                        last_scan = datetime.fromisoformat(str(last_scan_raw).replace("Z", "+00:00"))
-                except Exception:
-                    pass
+            # reboot_required: check various field names NinjaRMM uses
+            reboot_required = bool(
+                dev.get("rebootRequired")
+                or dev.get("pendingReboot")
+                or dev.get("reboot_required")
+                or (dev.get("os") or {}).get("pendingReboot")
+            )
 
             await session.execute(
                 text("""
@@ -205,7 +270,7 @@ async def _sync_patch_status(token: str, session: Any) -> None:
                         patches_pending  = EXCLUDED.patches_pending,
                         patches_failed   = EXCLUDED.patches_failed,
                         reboot_required  = EXCLUDED.reboot_required,
-                        last_scan        = EXCLUDED.last_scan,
+                        last_scan        = COALESCE(EXCLUDED.last_scan, device_patch_status.last_scan),
                         updated_at       = NOW()
                 """),
                 {
@@ -221,7 +286,7 @@ async def _sync_patch_status(token: str, session: Any) -> None:
             upserted += 1
 
             # ── Reboot alert ──────────────────────────────────────────────────
-            if not reboot_required:
+            if not reboot_required or not hostname:
                 continue
 
             # Check last_reboot from device_registry
@@ -229,31 +294,28 @@ async def _sync_patch_status(token: str, session: Any) -> None:
                 text("SELECT last_reboot FROM device_registry WHERE ninja_id = :nid"),
                 {"nid": ninja_id},
             )
-            dev = dev_rows.mappings().first()
-            if dev is None:
-                continue
+            dev_reg = dev_rows.mappings().first()
+            if dev_reg is None:
+                continue  # Device not in our registry — skip
 
-            last_reboot = dev["last_reboot"]
+            last_reboot = dev_reg["last_reboot"]
             seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
-            if last_reboot and last_reboot.tzinfo is None:
-                last_reboot = last_reboot.replace(tzinfo=timezone.utc)
-            if last_reboot and last_reboot >= seven_days_ago:
-                continue  # Rebooted recently — no alert
+            if last_reboot:
+                if last_reboot.tzinfo is None:
+                    last_reboot = last_reboot.replace(tzinfo=timezone.utc)
+                if last_reboot >= seven_days_ago:
+                    continue  # Rebooted recently — no alert
 
-            # Deduplicate: skip if an open alert with the same title already exists
+            # Deduplicate: skip if an open alert with this title already exists
             alert_title = f"Reboot Required: {hostname}"
             existing = await session.execute(
-                text("""
-                    SELECT id FROM alerts
-                    WHERE title = :title AND status != 'resolved'
-                    LIMIT 1
-                """),
-                {"title": alert_title},
+                text("SELECT id FROM alerts WHERE title = :t AND status != 'resolved' LIMIT 1"),
+                {"t": alert_title},
             )
             if existing.first() is not None:
-                continue  # Alert already open — skip
+                continue
 
-            # Fire alert via alert pipeline (commit current transaction first)
+            # Fire alert in its own session (avoids mid-loop commit on shared session)
             await session.commit()
             try:
                 from backend.schemas import RawAlert
@@ -266,7 +328,7 @@ async def _sync_patch_status(token: str, session: Any) -> None:
                     title=alert_title,
                     message=(
                         f"{hostname} has pending Windows updates that require a reboot. "
-                        f"Last reboot was {'never' if not last_reboot else last_reboot.strftime('%Y-%m-%d')}."
+                        f"Last reboot: {'never' if not last_reboot else last_reboot.strftime('%Y-%m-%d')}."
                     ),
                     severity="warning",
                     fingerprint_key=f"reboot_required:{hostname}",
@@ -280,7 +342,7 @@ async def _sync_patch_status(token: str, session: Any) -> None:
                 logger.exception("NinjaRMM: failed to fire reboot alert for %s", hostname)
 
         except Exception:
-            logger.exception("NinjaRMM: error processing patch row for device %s", row.get("deviceId"))
+            logger.exception("NinjaRMM: error processing patch data for device %s", ninja_id)
 
     logger.info(
         "NinjaRMM: patch sync complete — %d upserted, %d reboot alerts fired",
@@ -392,6 +454,13 @@ async def _sync_once(client_id: str, client_secret: str) -> None:
     devices = await _fetch_devices(token)
     logger.info("NinjaRMM: fetched %d devices", len(devices))
 
+    # Build id→device map for patch status enrichment (hostname, pendingReboot)
+    devices_by_id: dict[int, dict[str, Any]] = {}
+    for dev in devices:
+        did = dev.get("id")
+        if did is not None:
+            devices_by_id[int(did)] = dev
+
     # ── Step 1: Update device_registry ───────────────────────────────────────
     # Pure DB work — no HTTP calls inside this transaction.
     # Collect (ninja_id, last_reboot) for matched devices so we can do
@@ -499,7 +568,7 @@ async def _sync_once(client_id: str, client_secret: str) -> None:
     # ── Step 4: Patch status sync ─────────────────────────────────────────────
     async with AsyncSession(engine) as session:
         async with session.begin():
-            await _sync_patch_status(token, session)
+            await _sync_patch_status(token, session, devices_by_id)
 
 
 async def ninja_sync_loop() -> None:
