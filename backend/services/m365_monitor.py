@@ -392,5 +392,6 @@ async def m365_sync_loop() -> None:
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.exception("M365: sync error (will retry next cycle)")
+            import traceback
+            logger.error("M365: sync error (will retry next cycle) — %s", traceback.format_exc())
         await asyncio.sleep(_INTERVAL)

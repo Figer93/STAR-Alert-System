@@ -495,5 +495,6 @@ async def ad_sync_loop() -> None:
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.exception("Azure AD: sync error (will retry next cycle)")
+            import traceback
+            logger.error("Azure AD: sync error (will retry next cycle) — %s", traceback.format_exc())
         await asyncio.sleep(_INTERVAL)
