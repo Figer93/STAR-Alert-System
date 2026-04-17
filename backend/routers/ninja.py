@@ -172,7 +172,7 @@ async def get_disk_trend(
         SELECT disk_free_pct, recorded_at
         FROM disk_history
         WHERE ninja_id = :nid
-          AND recorded_at >= NOW() - (:days || ' days')::INTERVAL
+          AND recorded_at >= NOW() - make_interval(days => :days)
         ORDER BY recorded_at ASC
         """,
         {"nid": ninja_id, "days": days},
