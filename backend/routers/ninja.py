@@ -97,19 +97,23 @@ class DiskTrendResponse(BaseModel):
 async def get_patch_status(db: AsyncSession = Depends(get_db)):
     """All devices' patch compliance, ordered by worst first."""
     rows = await _exec(db, """
-        SELECT
-            p.ninja_id,
-            p.hostname,
-            d.os_name,
-            p.patches_approved,
-            p.patches_pending,
-            p.patches_failed,
-            p.reboot_required,
-            p.last_scan,
-            p.updated_at
-        FROM device_patch_status p
-        LEFT JOIN device_registry d ON d.ninja_id = p.ninja_id
-        ORDER BY p.patches_failed DESC, p.patches_pending DESC, p.hostname ASC
+        SELECT *
+        FROM (
+            SELECT DISTINCT ON (p.hostname)
+                p.ninja_id,
+                p.hostname,
+                d.os_name,
+                p.patches_approved,
+                p.patches_pending,
+                p.patches_failed,
+                p.reboot_required,
+                p.last_scan,
+                p.updated_at
+            FROM device_patch_status p
+            LEFT JOIN device_registry d ON d.ninja_id = p.ninja_id
+            ORDER BY p.hostname ASC, p.ninja_id DESC
+        ) deduped
+        ORDER BY patches_failed DESC, patches_pending DESC, hostname ASC
     """)
     return [
         PatchStatusRow(

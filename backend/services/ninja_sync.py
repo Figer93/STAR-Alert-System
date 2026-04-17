@@ -175,12 +175,23 @@ async def _fetch_device_software(token: str, ninja_id: int) -> list[dict[str, An
 # ── Sync helpers ──────────────────────────────────────────────────────────────
 
 def _parse_ts(raw: Any) -> datetime | None:
-    """Parse an epoch-ms integer or ISO string into a UTC datetime."""
+    """
+    Parse a NinjaRMM timestamp into a UTC datetime.
+
+    NinjaRMM returns timestamps in epoch-seconds for most fields
+    (lastReboot, lastContact, lastUpdated on patches, etc.).
+    A small number of endpoints use epoch-milliseconds.
+
+    Heuristic: values > 1e10 are treated as milliseconds (divide by 1000);
+    values <= 1e10 are treated as seconds.  Current epoch is ~1.74e9 s /
+    ~1.74e12 ms, so this correctly separates the two cases with wide margin.
+    """
     if not raw:
         return None
     try:
         if isinstance(raw, (int, float)):
-            return datetime.fromtimestamp(raw / 1000, tz=timezone.utc)
+            ts = raw / 1000 if raw > 1e10 else raw
+            return datetime.fromtimestamp(ts, tz=timezone.utc)
         return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
     except Exception:
         return None
@@ -233,10 +244,31 @@ async def _sync_patch_status(
 
     logger.info("NinjaRMM: aggregated patch data for %d devices", len(by_device))
 
+    # ── Deduplicate by hostname ───────────────────────────────────────────────
+    # Multiple ninja_ids can share a hostname when a device is re-enrolled.
+    # Keep only the highest ninja_id (most recent enrollment) per hostname so
+    # we upsert a single row. The SQL query also uses DISTINCT ON as a safety net.
+    hostname_to_best_id: dict[str, int] = {}
+    for ninja_id, counts in by_device.items():
+        dev      = devices_by_id.get(ninja_id, {})
+        hostname = (
+            dev.get("dnsName") or dev.get("systemName") or dev.get("hostname") or ""
+        ).split(".")[0].lower()
+        if not hostname:
+            continue
+        existing = hostname_to_best_id.get(hostname)
+        if existing is None or ninja_id > existing:
+            hostname_to_best_id[hostname] = ninja_id
+
+    # Invert: set of canonical ninja_ids to actually upsert
+    canonical_ids = set(hostname_to_best_id.values())
+
     upserted    = 0
     alerts_fired = 0
 
     for ninja_id, counts in by_device.items():
+        if ninja_id not in canonical_ids:
+            continue   # duplicate hostname — skip lower-numbered ninja_id
         try:
             dev      = devices_by_id.get(ninja_id, {})
             hostname = (
@@ -434,15 +466,7 @@ async def _sync_disk_history(session: Any) -> None:
 # ── Main sync cycle ───────────────────────────────────────────────────────────
 
 def _parse_last_reboot(dev: dict[str, Any]) -> datetime | None:
-    raw = dev.get("lastReboot") or dev.get("last_reboot")
-    if not raw:
-        return None
-    try:
-        if isinstance(raw, (int, float)):
-            return datetime.fromtimestamp(raw / 1000, tz=timezone.utc)
-        return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-    except Exception:
-        return None
+    return _parse_ts(dev.get("lastReboot") or dev.get("last_reboot"))
 
 
 async def _sync_once(client_id: str, client_secret: str) -> None:
