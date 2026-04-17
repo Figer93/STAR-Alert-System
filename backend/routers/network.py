@@ -245,11 +245,13 @@ class DeviceDetail(BaseModel):
     latency_to_gateway_24h: list[dict[str, Any]]
     incidents: list[dict[str, Any]]
     # NinjaRMM-enriched fields
+    ninja_id: Optional[int] = None
     os_name: Optional[str] = None
     last_logged_in_user: Optional[str] = None
     serial: Optional[str] = None
     ninja_online: Optional[bool] = None
     disk_free_pct: Optional[float] = None
+    last_reboot: Optional[datetime] = None
 
 
 class TimelineEvent(BaseModel):
@@ -1356,7 +1358,8 @@ async def get_device(ip: str, db: AsyncSession = Depends(get_db)):
     dev_rows = await _exec(db,
         "SELECT ip::text AS ip, mac, hostname, switch_id, port_id, "
         "last_seen, first_seen, is_online, device_type, notes, "
-        "os_name, last_logged_in_user, serial, ninja_online, disk_free_pct "
+        "ninja_id, os_name, last_logged_in_user, serial, ninja_online, "
+        "disk_free_pct, last_reboot "
         "FROM device_registry WHERE ip::text = :ip",
         {"ip": ip})
     if not dev_rows:
@@ -1466,11 +1469,13 @@ async def get_device(ip: str, db: AsyncSession = Depends(get_db)):
         port_errors_24h=_serialise(port_errors_24h),
         latency_to_gateway_24h=_serialise(latency_24h),
         incidents=_serialise(incidents),
+        ninja_id=dev.get("ninja_id"),
         os_name=dev.get("os_name"),
         last_logged_in_user=dev.get("last_logged_in_user"),
         serial=dev.get("serial"),
         ninja_online=dev.get("ninja_online"),
         disk_free_pct=dev.get("disk_free_pct"),
+        last_reboot=dev.get("last_reboot"),
     )
 
 

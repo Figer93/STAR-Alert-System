@@ -162,6 +162,49 @@ export const updateChannelSettings = (
 ) =>
   api.put<NotificationChannelSettings>(`/notification-settings/${channel}`, data).then(r => r.data)
 
+// ── NinjaRMM ──────────────────────────────────────────────────────────────────
+
+export interface PatchStatusRow {
+  ninja_id:         number
+  hostname:         string
+  os_name:          string | null
+  patches_approved: number
+  patches_pending:  number
+  patches_failed:   number
+  reboot_required:  boolean
+  last_scan:        string | null
+  updated_at:       string | null
+}
+
+export interface SoftwareRow {
+  id:           number
+  ninja_id:     number
+  name:         string
+  version:      string | null
+  publisher:    string | null
+  install_date: string | null
+}
+
+export interface DiskPoint {
+  recorded_at:   string
+  disk_free_pct: number
+}
+
+export interface DiskTrendResponse {
+  history:               DiskPoint[]
+  fill_rate_pct_per_day: number | null
+  days_until_full:       number | null
+}
+
+export const getPatchStatus = () =>
+  api.get<PatchStatusRow[]>('/ninja/patch-status').then(r => r.data)
+
+export const getDeviceSoftware = (ninjaId: number) =>
+  api.get<SoftwareRow[]>(`/ninja/devices/${ninjaId}/software`).then(r => r.data)
+
+export const getDiskTrend = (ninjaId: number, days = 14) =>
+  api.get<DiskTrendResponse>(`/ninja/devices/${ninjaId}/disk-trend`, { params: { days } }).then(r => r.data)
+
 // ── Network overview ──────────────────────────────────────────────────────────
 
 export interface NetworkOverviewData {

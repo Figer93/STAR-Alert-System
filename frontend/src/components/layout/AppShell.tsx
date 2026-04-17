@@ -4,7 +4,7 @@ import {
   LayoutDashboard, History, Radio, Settings,
   Network, GitBranch, Wifi, Activity,
   Search, Layers, AlertTriangle, Telescope,
-  ChevronRight, HeartPulse, Wrench
+  ChevronRight, HeartPulse, Wrench, ShieldCheck,
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { NetworkStatusBanners } from '../network/NetworkStatusBanners'
@@ -38,10 +38,11 @@ const PAGE_META: Record<string, { title: string; crumbs: string[] }> = {
   '/network/ports':     { title: 'Switch Ports', crumbs: ['Network'] },
   '/network/latency':   { title: 'Latency', crumbs: ['Network'] },
   '/network/traffic':   { title: 'Traffic', crumbs: ['Network'] },
-  '/network/investigate': { title: 'Investigate', crumbs: ['Network'] },
-  '/network/devices':   { title: 'Devices', crumbs: ['Network'] },
-  '/network/incidents': { title: 'Incidents', crumbs: ['Network'] },
-  '/network/settings':  { title: 'Settings', crumbs: ['Network'] },
+  '/network/investigate':       { title: 'Investigate',       crumbs: ['Network'] },
+  '/network/devices':           { title: 'Devices',           crumbs: ['Network'] },
+  '/network/incidents':         { title: 'Incidents',         crumbs: ['Network'] },
+  '/network/patch-compliance':  { title: 'Patch Compliance',  crumbs: ['Network'] },
+  '/network/settings':          { title: 'Settings',          crumbs: ['Network'] },
   '/system/health':       { title: 'System Health',   crumbs: ['System'] },
   '/system/maintenance':  { title: 'Maintenance',     crumbs: ['System'] },
 }
@@ -54,13 +55,14 @@ const TOP_NAV = [
 ]
 
 const NETWORK_NAV = [
-  { to: '/network',             icon: Network,       label: 'Overview' },
-  { to: '/network/ports',       icon: GitBranch,     label: 'Ports' },
-  { to: '/network/devices',     icon: Layers,        label: 'Devices' },
-  { to: '/network/latency',     icon: Activity,      label: 'Latency' },
-  { to: '/network/traffic',     icon: Wifi,          label: 'Traffic' },
-  { to: '/network/incidents',   icon: AlertTriangle, label: 'Incidents' },
-  { to: '/network/investigate', icon: Telescope,     label: 'Investigate' },
+  { to: '/network',                  icon: Network,       label: 'Overview' },
+  { to: '/network/ports',            icon: GitBranch,     label: 'Ports' },
+  { to: '/network/devices',          icon: Layers,        label: 'Devices' },
+  { to: '/network/latency',          icon: Activity,      label: 'Latency' },
+  { to: '/network/traffic',          icon: Wifi,          label: 'Traffic' },
+  { to: '/network/incidents',        icon: AlertTriangle, label: 'Incidents' },
+  { to: '/network/investigate',      icon: Telescope,     label: 'Investigate' },
+  { to: '/network/patch-compliance', icon: ShieldCheck,   label: 'Patch Compliance' },
 ]
 
 const BOTTOM_NAV = [

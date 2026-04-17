@@ -6,8 +6,12 @@ import {
   ExternalLink, Edit2, Check, X, Trash2, AlertTriangle,
   RefreshCw, Download, Router, Smartphone, Network, Cpu,
 } from 'lucide-react'
+import {
+  AreaChart, Area, XAxis, YAxis, Tooltip as ReTooltip, ResponsiveContainer,
+} from 'recharts'
 import { Drawer } from 'vaul'
 import { TextScramble } from '../../components/TextScramble'
+import { getDeviceSoftware, getDiskTrend, type SoftwareRow, type DiskTrendResponse } from '../../lib/api'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -49,11 +53,13 @@ interface DeviceDetail {
   latency_to_gateway_24h: Array<{ time: string; avg_rtt: number | null }>
   incidents:              Array<Record<string, unknown>>
   // NinjaRMM-enriched fields
+  ninja_id:            number | null
   os_name:             string | null
   last_logged_in_user: string | null
   serial:              string | null
   ninja_online:        boolean | null
   disk_free_pct:       number | null
+  last_reboot:         string | null
 }
 
 interface TimelineEvent {
@@ -465,6 +471,14 @@ function DevicePanel({
   const [confirmForget, setConfirmForget] = useState(false)
   const [forgetting, setForgetting]       = useState(false)
 
+  // NinjaRMM tabs: 'info' | 'software' | 'disk'
+  const [ninjaTab, setNinjaTab]         = useState<'info' | 'software' | 'disk'>('info')
+  const [software, setSoftware]         = useState<SoftwareRow[]>([])
+  const [swLoading, setSwLoading]       = useState(false)
+  const [swQuery, setSwQuery]           = useState('')
+  const [diskTrend, setDiskTrend]       = useState<DiskTrendResponse | null>(null)
+  const [diskLoading, setDiskLoading]   = useState(false)
+
   // Load detail + 24h timeline in parallel
   useEffect(() => {
     if (!ip) return
@@ -473,6 +487,10 @@ function DevicePanel({
     setDetail(null)
     setTimeline([])
     setConfirmForget(false)
+    setNinjaTab('info')
+    setSoftware([])
+    setSwQuery('')
+    setDiskTrend(null)
 
     const now   = new Date()
     const ago24 = new Date(now.getTime() - 24 * 60 * 60 * 1000)
@@ -499,6 +517,30 @@ function DevicePanel({
 
     return () => { cancelled = true }
   }, [ip])
+
+  // Lazy-load software when tab becomes active
+  useEffect(() => {
+    if (ninjaTab !== 'software' || !detail?.ninja_id) return
+    if (software.length > 0) return   // already loaded for this device
+    let cancelled = false
+    setSwLoading(true)
+    getDeviceSoftware(detail.ninja_id)
+      .then(data => { if (!cancelled) { setSoftware(data); setSwLoading(false) } })
+      .catch(() => { if (!cancelled) setSwLoading(false) })
+    return () => { cancelled = true }
+  }, [ninjaTab, detail?.ninja_id])  // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Lazy-load disk trend when tab becomes active
+  useEffect(() => {
+    if (ninjaTab !== 'disk' || !detail?.ninja_id) return
+    if (diskTrend !== null) return   // already loaded for this device
+    let cancelled = false
+    setDiskLoading(true)
+    getDiskTrend(detail.ninja_id, 14)
+      .then(data => { if (!cancelled) { setDiskTrend(data); setDiskLoading(false) } })
+      .catch(() => { if (!cancelled) setDiskLoading(false) })
+    return () => { cancelled = true }
+  }, [ninjaTab, detail?.ninja_id])  // eslint-disable-line react-hooks/exhaustive-deps
 
   // vaul handles click-outside
 
@@ -618,6 +660,175 @@ function DevicePanel({
                 ))}
               </div>
             </section>
+
+            {/* NinjaRMM section — only shown when ninja_id is set */}
+            {detail?.ninja_id && (
+              <section>
+                <h4 style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 10 }}>NinjaRMM</h4>
+
+                {/* Tab bar */}
+                <div style={{ display: 'flex', gap: 4, marginBottom: 14, borderBottom: '1px solid var(--border)', paddingBottom: 0 }}>
+                  {(['info', 'software', 'disk'] as const).map(tab => (
+                    <button
+                      key={tab}
+                      onClick={() => setNinjaTab(tab)}
+                      style={{
+                        padding: '5px 12px',
+                        fontSize: 12,
+                        fontWeight: 600,
+                        background: 'none',
+                        border: 'none',
+                        cursor: 'pointer',
+                        color: ninjaTab === tab ? 'var(--accent)' : 'var(--text-muted)',
+                        borderBottom: ninjaTab === tab ? '2px solid var(--accent)' : '2px solid transparent',
+                        marginBottom: -1,
+                        textTransform: 'capitalize',
+                      }}
+                    >
+                      {tab === 'disk' ? 'Disk Trend' : tab.charAt(0).toUpperCase() + tab.slice(1)}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Info tab */}
+                {ninjaTab === 'info' && (
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px 16px' }}>
+                    {[
+                      ['User',       detail.last_logged_in_user ?? '--'],
+                      ['Serial',     detail.serial               ?? '--'],
+                      ['Ninja Online', detail.ninja_online === true ? 'Yes' : detail.ninja_online === false ? 'No' : '--'],
+                      ['Disk Free',  detail.disk_free_pct != null ? `${detail.disk_free_pct.toFixed(1)}%` : '--'],
+                      ['Last Reboot', detail.last_reboot ? new Date(detail.last_reboot).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '--'],
+                    ].map(([k, v]) => (
+                      <div key={k}>
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 2 }}>{k}</div>
+                        <div style={{ fontSize: 13, color: 'var(--text-primary)', wordBreak: 'break-all' }}>{v as string}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Software tab */}
+                {ninjaTab === 'software' && (
+                  <div>
+                    <input
+                      type="text"
+                      placeholder="Filter by name…"
+                      value={swQuery}
+                      onChange={e => setSwQuery(e.target.value)}
+                      style={{
+                        width: '100%', boxSizing: 'border-box',
+                        background: 'var(--bg-base)',
+                        border: '1px solid var(--border)',
+                        color: 'var(--text-primary)',
+                        borderRadius: 6, padding: '6px 10px',
+                        fontSize: 12, marginBottom: 10,
+                      }}
+                    />
+                    {swLoading ? (
+                      <p style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'center', margin: '20px 0' }}>Loading…</p>
+                    ) : software.length === 0 ? (
+                      <p style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'center', margin: '20px 0' }}>No software data available.</p>
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 2, maxHeight: 300, overflowY: 'auto' }}>
+                        {software
+                          .filter(s => !swQuery || s.name.toLowerCase().includes(swQuery.toLowerCase()))
+                          .map(s => (
+                            <div key={s.id} style={{
+                              padding: '6px 8px',
+                              borderRadius: 5,
+                              background: 'var(--bg-base)',
+                              border: '1px solid var(--border-dim)',
+                            }}>
+                              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', wordBreak: 'break-word' }}>{s.name}</div>
+                              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 1 }}>
+                                {[s.version, s.publisher].filter(Boolean).join(' · ') || '--'}
+                              </div>
+                            </div>
+                          ))
+                        }
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Disk trend tab */}
+                {ninjaTab === 'disk' && (
+                  <div>
+                    {diskLoading ? (
+                      <p style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'center', margin: '20px 0' }}>Loading…</p>
+                    ) : !diskTrend || diskTrend.history.length === 0 ? (
+                      <p style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'center', margin: '20px 0' }}>No disk history yet.</p>
+                    ) : (
+                      <div>
+                        <ResponsiveContainer width="100%" height={120}>
+                          <AreaChart data={diskTrend.history} margin={{ top: 4, right: 4, bottom: 0, left: -24 }}>
+                            <defs>
+                              <linearGradient id="diskGrad" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="5%"  stopColor="var(--accent)" stopOpacity={0.35} />
+                                <stop offset="95%" stopColor="var(--accent)" stopOpacity={0.03} />
+                              </linearGradient>
+                            </defs>
+                            <XAxis
+                              dataKey="recorded_at"
+                              tickFormatter={v => new Date(v).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}
+                              tick={{ fontSize: 10, fill: 'var(--text-muted)' }}
+                              tickLine={false}
+                              axisLine={false}
+                              interval="preserveStartEnd"
+                            />
+                            <YAxis
+                              domain={[0, 100]}
+                              tick={{ fontSize: 10, fill: 'var(--text-muted)' }}
+                              tickLine={false}
+                              axisLine={false}
+                              tickFormatter={v => `${v}%`}
+                            />
+                            <ReTooltip
+                              contentStyle={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 5, fontSize: 12 }}
+                              labelFormatter={v => new Date(v as string).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
+                              formatter={(v: number) => [`${v.toFixed(1)}%`, 'Disk Free']}
+                            />
+                            <Area
+                              type="monotone"
+                              dataKey="disk_free_pct"
+                              stroke="var(--accent)"
+                              strokeWidth={2}
+                              fill="url(#diskGrad)"
+                              dot={false}
+                              isAnimationActive={false}
+                            />
+                          </AreaChart>
+                        </ResponsiveContainer>
+
+                        {/* Fill rate annotation */}
+                        <div style={{ marginTop: 10, fontSize: 12 }}>
+                          {diskTrend.fill_rate_pct_per_day === null ? null
+                            : diskTrend.fill_rate_pct_per_day >= 0 ? (
+                              <span style={{ color: '#22c55e', fontWeight: 600 }}>Stable (disk is not filling)</span>
+                            ) : (
+                              <span style={{
+                                fontWeight: 600,
+                                color: diskTrend.days_until_full != null && diskTrend.days_until_full < 7
+                                  ? '#ef4444'
+                                  : diskTrend.days_until_full != null && diskTrend.days_until_full < 30
+                                  ? '#eab308'
+                                  : 'var(--text-muted)',
+                              }}>
+                                Filling at ~{Math.abs(diskTrend.fill_rate_pct_per_day).toFixed(2)}% per day
+                                {diskTrend.days_until_full != null
+                                  ? ` · Full in ~${diskTrend.days_until_full} days`
+                                  : ''}
+                              </span>
+                            )
+                          }
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </section>
+            )}
 
             {/* 24h stability */}
             <section>
