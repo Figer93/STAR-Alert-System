@@ -787,7 +787,7 @@ function DevicePanel({
                             <ReTooltip
                               contentStyle={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 5, fontSize: 12 }}
                               labelFormatter={v => new Date(v as string).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
-                              formatter={(v: number) => [`${v.toFixed(1)}%`, 'Disk Free']}
+                              formatter={(v) => [`${Number(v).toFixed(1)}%`, 'Disk Free']}
                             />
                             <Area
                               type="monotone"
