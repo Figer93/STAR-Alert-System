@@ -310,6 +310,35 @@ export const getAdUsers = (filters: AdUserFilters = {}) =>
 export const getAdSummary = () =>
   api.get<AdSummary>('/ad/summary').then(r => r.data)
 
+// ── M365 ──────────────────────────────────────────────────────────────────────
+
+export interface M365ServiceHealth {
+  service_id:   string
+  service_name: string
+  status:       string
+  recorded_at:  string | null
+}
+
+export interface M365Incident {
+  id:             number
+  incident_id:    string
+  service_name:   string | null
+  title:          string | null
+  status:         string | null
+  classification: string | null
+  severity:       string | null
+  start_time:     string | null
+  end_time:       string | null
+  is_resolved:    boolean
+  updated_at:     string | null
+}
+
+export const getM365Health = () =>
+  api.get<M365ServiceHealth[]>('/m365/health').then(r => r.data)
+
+export const getM365Incidents = (resolved = false) =>
+  api.get<M365Incident[]>('/m365/incidents', { params: { resolved } }).then(r => r.data)
+
 // ── CSV export ────────────────────────────────────────────────────────────────
 
 export const exportAlertsCsv = () => {

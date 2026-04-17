@@ -23,6 +23,7 @@ const NetworkSettings       = lazy(() => import('./pages/network/NetworkSettings
 const NetworkIncidents      = lazy(() => import('./pages/network/Incidents'))
 const NetworkPatchCompliance = lazy(() => import('./pages/network/PatchCompliance'))
 const NetworkADMonitor       = lazy(() => import('./pages/network/ADMonitor'))
+const NetworkM365Health      = lazy(() => import('./pages/network/M365Health'))
 const SystemHealth       = lazy(() => import('./pages/system/SystemHealth'))
 const SystemMaintenance  = lazy(() => import('./pages/system/SystemMaintenance'))
 
@@ -96,6 +97,7 @@ function AnimatedRoutes() {
         <Route path="/network/incidents"         element={<RouteMotion><NetworkIncidents /></RouteMotion>} />
         <Route path="/network/patch-compliance" element={<RouteMotion><NetworkPatchCompliance /></RouteMotion>} />
         <Route path="/network/ad-monitor"       element={<RouteMotion><NetworkADMonitor /></RouteMotion>} />
+        <Route path="/network/m365-health"      element={<RouteMotion><NetworkM365Health /></RouteMotion>} />
         <Route path="/network/settings"         element={<RouteMotion><NetworkSettings /></RouteMotion>} />
         <Route path="/system/health"       element={<RouteMotion><SystemHealth /></RouteMotion>} />
         <Route path="/system/maintenance"  element={<RouteMotion><SystemMaintenance /></RouteMotion>} />

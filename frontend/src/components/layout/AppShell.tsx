@@ -4,7 +4,7 @@ import {
   LayoutDashboard, History, Radio, Settings,
   Network, GitBranch, Wifi, Activity,
   Search, Layers, AlertTriangle, Telescope,
-  ChevronRight, HeartPulse, Wrench, ShieldCheck, Users,
+  ChevronRight, HeartPulse, Wrench, ShieldCheck, Users, Cloud,
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { NetworkStatusBanners } from '../network/NetworkStatusBanners'
@@ -43,6 +43,7 @@ const PAGE_META: Record<string, { title: string; crumbs: string[] }> = {
   '/network/incidents':         { title: 'Incidents',         crumbs: ['Network'] },
   '/network/patch-compliance':  { title: 'Patch Compliance',  crumbs: ['Network'] },
   '/network/ad-monitor':        { title: 'AD Monitor',        crumbs: ['Network'] },
+  '/network/m365-health':       { title: 'M365 Health',       crumbs: ['Network'] },
   '/network/settings':          { title: 'Settings',          crumbs: ['Network'] },
   '/system/health':       { title: 'System Health',   crumbs: ['System'] },
   '/system/maintenance':  { title: 'Maintenance',     crumbs: ['System'] },
@@ -65,6 +66,7 @@ const NETWORK_NAV = [
   { to: '/network/investigate',      icon: Telescope,     label: 'Investigate' },
   { to: '/network/patch-compliance', icon: ShieldCheck,   label: 'Patch Compliance' },
   { to: '/network/ad-monitor',       icon: Users,         label: 'AD Monitor' },
+  { to: '/network/m365-health',      icon: Cloud,         label: 'M365 Health' },
 ]
 
 const BOTTOM_NAV = [
