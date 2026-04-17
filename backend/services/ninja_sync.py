@@ -288,9 +288,16 @@ async def _sync_patch_status(token: str, session: Any) -> None:
     )
 
 
-async def _sync_software(token: str, ninja_id: int, session: Any) -> None:
-    """Delete and re-insert software inventory for one device."""
+async def _sync_software_standalone(token: str, ninja_id: int) -> None:
+    """
+    Delete and re-insert software inventory for one device.
+
+    Runs in its own session so a failure cannot abort any shared transaction.
+    HTTP fetch happens before opening the DB session.
+    """
+    from backend.database import engine
     from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import AsyncSession
 
     try:
         sw_list = await _fetch_device_software(token, ninja_id)
@@ -298,46 +305,50 @@ async def _sync_software(token: str, ninja_id: int, session: Any) -> None:
         logger.exception("NinjaRMM: failed to fetch software for device %d", ninja_id)
         return
 
-    await session.execute(
-        text("DELETE FROM device_software WHERE ninja_id = :nid"),
-        {"nid": ninja_id},
-    )
-
     now = datetime.now(timezone.utc)
+    rows = []
     for sw in sw_list:
-        try:
-            name      = sw.get("name") or sw.get("productName") or ""
-            version   = sw.get("version") or sw.get("productVersion")
-            publisher = sw.get("publisher") or sw.get("vendor")
-            install_raw = sw.get("installDate") or sw.get("installedDate")
-            install_date = None
-            if install_raw:
-                try:
-                    install_date = datetime.fromisoformat(
-                        str(install_raw).replace("Z", "+00:00")
-                    ).date()
-                except Exception:
-                    pass
+        name      = sw.get("name") or sw.get("productName") or ""
+        version   = sw.get("version") or sw.get("productVersion")
+        publisher = sw.get("publisher") or sw.get("vendor")
+        install_raw = sw.get("installDate") or sw.get("installedDate")
+        install_date = None
+        if install_raw:
+            try:
+                install_date = datetime.fromisoformat(
+                    str(install_raw).replace("Z", "+00:00")
+                ).date()
+            except Exception:
+                pass
+        if name:
+            rows.append({
+                "ninja_id":     ninja_id,
+                "name":         name,
+                "version":      version,
+                "publisher":    publisher,
+                "install_date": install_date,
+                "updated_at":   now,
+            })
 
-            if not name:
-                continue
-
-            await session.execute(
-                text("""
-                    INSERT INTO device_software (ninja_id, name, version, publisher, install_date, updated_at)
-                    VALUES (:ninja_id, :name, :version, :publisher, :install_date, :updated_at)
-                """),
-                {
-                    "ninja_id":     ninja_id,
-                    "name":         name,
-                    "version":      version,
-                    "publisher":    publisher,
-                    "install_date": install_date,
-                    "updated_at":   now,
-                },
-            )
-        except Exception:
-            logger.exception("NinjaRMM: error inserting software row for device %d", ninja_id)
+    try:
+        async with AsyncSession(engine) as session:
+            async with session.begin():
+                await session.execute(
+                    text("DELETE FROM device_software WHERE ninja_id = :nid"),
+                    {"nid": ninja_id},
+                )
+                for r in rows:
+                    await session.execute(
+                        text("""
+                            INSERT INTO device_software
+                                (ninja_id, name, version, publisher, install_date, updated_at)
+                            VALUES
+                                (:ninja_id, :name, :version, :publisher, :install_date, :updated_at)
+                        """),
+                        r,
+                    )
+    except Exception:
+        logger.exception("NinjaRMM: DB error syncing software for device %d", ninja_id)
 
 
 async def _sync_disk_history(session: Any) -> None:
@@ -360,6 +371,18 @@ async def _sync_disk_history(session: Any) -> None:
 
 # ── Main sync cycle ───────────────────────────────────────────────────────────
 
+def _parse_last_reboot(dev: dict[str, Any]) -> datetime | None:
+    raw = dev.get("lastReboot") or dev.get("last_reboot")
+    if not raw:
+        return None
+    try:
+        if isinstance(raw, (int, float)):
+            return datetime.fromtimestamp(raw / 1000, tz=timezone.utc)
+        return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
 async def _sync_once(client_id: str, client_secret: str) -> None:
     from backend.database import engine
     from sqlalchemy import text
@@ -369,7 +392,13 @@ async def _sync_once(client_id: str, client_secret: str) -> None:
     devices = await _fetch_devices(token)
     logger.info("NinjaRMM: fetched %d devices", len(devices))
 
+    # ── Step 1: Update device_registry ───────────────────────────────────────
+    # Pure DB work — no HTTP calls inside this transaction.
+    # Collect (ninja_id, last_reboot) for matched devices so we can do
+    # software sync and last_reboot update outside this transaction.
     updated = 0
+    matched: list[tuple[int, datetime | None]] = []  # (ninja_id, last_reboot)
+
     async with AsyncSession(engine) as session:
         async with session.begin():
             for dev in devices:
@@ -382,9 +411,7 @@ async def _sync_once(client_id: str, client_secret: str) -> None:
                     if not hostname:
                         continue
 
-                    # Strip domain suffix so "pc01.corp.local" matches "pc01"
                     short_hostname = hostname.split(".")[0].lower()
-
                     ninja_id  = dev.get("id")
                     os_name   = (dev.get("os") or {}).get("name") or dev.get("operatingSystem")
                     last_user = (
@@ -407,33 +434,16 @@ async def _sync_once(client_id: str, client_secret: str) -> None:
 
                     disk_free_pct = _lowest_disk_free_pct(dev)
 
-                    # Parse last_reboot timestamp
-                    last_reboot_raw = dev.get("lastReboot") or dev.get("last_reboot")
-                    last_reboot: datetime | None = None
-                    if last_reboot_raw:
-                        try:
-                            if isinstance(last_reboot_raw, (int, float)):
-                                last_reboot = datetime.fromtimestamp(
-                                    last_reboot_raw / 1000, tz=timezone.utc
-                                )
-                            else:
-                                last_reboot = datetime.fromisoformat(
-                                    str(last_reboot_raw).replace("Z", "+00:00")
-                                )
-                        except Exception:
-                            pass
-
                     result = await session.execute(
                         text("""
                             UPDATE device_registry
                             SET
-                                ninja_id             = :ninja_id,
-                                os_name              = COALESCE(:os_name, os_name),
-                                last_logged_in_user  = COALESCE(:last_user, last_logged_in_user),
-                                serial               = COALESCE(:serial, serial),
-                                ninja_online         = :ninja_online,
-                                disk_free_pct        = :disk_free_pct,
-                                last_reboot          = COALESCE(:last_reboot, last_reboot)
+                                ninja_id            = :ninja_id,
+                                os_name             = COALESCE(:os_name, os_name),
+                                last_logged_in_user = COALESCE(:last_user, last_logged_in_user),
+                                serial              = COALESCE(:serial, serial),
+                                ninja_online        = :ninja_online,
+                                disk_free_pct       = :disk_free_pct
                             WHERE LOWER(hostname) = :hostname
                                OR LOWER(SPLIT_PART(hostname, '.', 1)) = :hostname
                         """),
@@ -444,28 +454,49 @@ async def _sync_once(client_id: str, client_secret: str) -> None:
                             "serial":        serial,
                             "ninja_online":  ninja_online,
                             "disk_free_pct": disk_free_pct,
-                            "last_reboot":   last_reboot,
                             "hostname":      short_hostname,
                         },
                     )
                     updated += result.rowcount
-
-                    # Per-device software sync (only for matched devices)
                     if ninja_id and result.rowcount > 0:
-                        await _sync_software(token, ninja_id, session)
+                        matched.append((ninja_id, _parse_last_reboot(dev)))
 
                 except Exception:
                     logger.exception("NinjaRMM: error processing device %s", dev.get("id"))
 
-            # Disk history snapshot (runs once per sync cycle for all devices)
+            # Disk history snapshot — inside same transaction (pure DB)
             try:
                 await _sync_disk_history(session)
             except Exception:
                 logger.exception("NinjaRMM: failed to record disk history")
 
-    logger.info("NinjaRMM: device sync complete, updated %d device_registry rows", updated)
+    logger.info("NinjaRMM: device sync complete — %d updated, %d matched", updated, len(matched))
 
-    # Patch status sync runs in its own session (may commit mid-loop for alerts)
+    # ── Step 2: Write last_reboot (best-effort — column may not exist yet) ────
+    reboot_pairs = [(nid, lr) for nid, lr in matched if lr is not None]
+    if reboot_pairs:
+        try:
+            async with AsyncSession(engine) as session:
+                async with session.begin():
+                    for ninja_id, last_reboot in reboot_pairs:
+                        await session.execute(
+                            text("""
+                                UPDATE device_registry
+                                SET last_reboot = :lr
+                                WHERE ninja_id = :nid
+                                  AND (last_reboot IS NULL OR last_reboot < :lr)
+                            """),
+                            {"lr": last_reboot, "nid": ninja_id},
+                        )
+        except Exception:
+            logger.debug("NinjaRMM: last_reboot update skipped (column may not exist yet): %s",
+                         repr(Exception))
+
+    # ── Step 3: Software sync — each device in its own isolated session ───────
+    for ninja_id, _ in matched:
+        await _sync_software_standalone(token, ninja_id)
+
+    # ── Step 4: Patch status sync ─────────────────────────────────────────────
     async with AsyncSession(engine) as session:
         async with session.begin():
             await _sync_patch_status(token, session)
