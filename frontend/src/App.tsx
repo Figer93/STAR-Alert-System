@@ -22,6 +22,7 @@ const NetworkDevices     = lazy(() => import('./pages/network/Devices'))
 const NetworkSettings       = lazy(() => import('./pages/network/NetworkSettings'))
 const NetworkIncidents      = lazy(() => import('./pages/network/Incidents'))
 const NetworkPatchCompliance = lazy(() => import('./pages/network/PatchCompliance'))
+const NetworkADMonitor       = lazy(() => import('./pages/network/ADMonitor'))
 const SystemHealth       = lazy(() => import('./pages/system/SystemHealth'))
 const SystemMaintenance  = lazy(() => import('./pages/system/SystemMaintenance'))
 
@@ -94,6 +95,7 @@ function AnimatedRoutes() {
         <Route path="/network/devices"     element={<RouteMotion><NetworkDevices /></RouteMotion>} />
         <Route path="/network/incidents"         element={<RouteMotion><NetworkIncidents /></RouteMotion>} />
         <Route path="/network/patch-compliance" element={<RouteMotion><NetworkPatchCompliance /></RouteMotion>} />
+        <Route path="/network/ad-monitor"       element={<RouteMotion><NetworkADMonitor /></RouteMotion>} />
         <Route path="/network/settings"         element={<RouteMotion><NetworkSettings /></RouteMotion>} />
         <Route path="/system/health"       element={<RouteMotion><SystemHealth /></RouteMotion>} />
         <Route path="/system/maintenance"  element={<RouteMotion><SystemMaintenance /></RouteMotion>} />

@@ -4,7 +4,7 @@ import {
   LayoutDashboard, History, Radio, Settings,
   Network, GitBranch, Wifi, Activity,
   Search, Layers, AlertTriangle, Telescope,
-  ChevronRight, HeartPulse, Wrench, ShieldCheck,
+  ChevronRight, HeartPulse, Wrench, ShieldCheck, Users,
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { NetworkStatusBanners } from '../network/NetworkStatusBanners'
@@ -42,6 +42,7 @@ const PAGE_META: Record<string, { title: string; crumbs: string[] }> = {
   '/network/devices':           { title: 'Devices',           crumbs: ['Network'] },
   '/network/incidents':         { title: 'Incidents',         crumbs: ['Network'] },
   '/network/patch-compliance':  { title: 'Patch Compliance',  crumbs: ['Network'] },
+  '/network/ad-monitor':        { title: 'AD Monitor',        crumbs: ['Network'] },
   '/network/settings':          { title: 'Settings',          crumbs: ['Network'] },
   '/system/health':       { title: 'System Health',   crumbs: ['System'] },
   '/system/maintenance':  { title: 'Maintenance',     crumbs: ['System'] },
@@ -63,6 +64,7 @@ const NETWORK_NAV = [
   { to: '/network/incidents',        icon: AlertTriangle, label: 'Incidents' },
   { to: '/network/investigate',      icon: Telescope,     label: 'Investigate' },
   { to: '/network/patch-compliance', icon: ShieldCheck,   label: 'Patch Compliance' },
+  { to: '/network/ad-monitor',       icon: Users,         label: 'AD Monitor' },
 ]
 
 const BOTTOM_NAV = [

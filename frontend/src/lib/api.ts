@@ -274,6 +274,42 @@ export const getCollectorHeartbeatLatest = () =>
 export const getRailwayStatus = () =>
   api.get<RailwayStatusData>('/system/railway-status').then(r => r.data)
 
+// ── Azure AD ──────────────────────────────────────────────────────────────────
+
+export interface AdUserRow {
+  id:               number
+  azure_id:         string
+  display_name:     string | null
+  upn:              string | null
+  account_enabled:  boolean | null
+  mfa_registered:   boolean | null
+  last_sign_in:     string | null
+  created_at_azure: string | null
+  is_deleted:       boolean
+  updated_at:       string | null
+}
+
+export interface AdSummary {
+  total:        number
+  enabled:      number
+  disabled:     number
+  no_mfa:       number
+  inactive_30d: number
+  deleted_7d:   number
+}
+
+export interface AdUserFilters {
+  enabled?:  boolean
+  mfa?:      boolean
+  inactive?: boolean
+}
+
+export const getAdUsers = (filters: AdUserFilters = {}) =>
+  api.get<AdUserRow[]>('/ad/users', { params: filters }).then(r => r.data)
+
+export const getAdSummary = () =>
+  api.get<AdSummary>('/ad/summary').then(r => r.data)
+
 // ── CSV export ────────────────────────────────────────────────────────────────
 
 export const exportAlertsCsv = () => {

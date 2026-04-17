@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.config import settings
 from backend.database import init_db
 from backend.network_monitor import run_network_checks, run_maintenance_loop
-from backend.routers import alerts, collector, ingest, maintenance, network, ninja, notifications, notification_settings, rules, sources, stats, system, ws
+from backend.routers import ad, alerts, collector, ingest, maintenance, network, ninja, notifications, notification_settings, rules, sources, stats, system, ws
 from backend.websocket_manager import ws_manager
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -322,6 +322,14 @@ async def lifespan(app: FastAPI):
         logger.exception("Failed to start NinjaRMM sync loop")
         ninja_task = None
 
+    # Azure AD sync loop (no-op if AZURE_* env vars not set)
+    try:
+        from backend.services.ad_monitor import ad_sync_loop
+        ad_task = asyncio.create_task(ad_sync_loop())
+    except Exception:
+        logger.exception("Failed to start Azure AD sync loop")
+        ad_task = None
+
     yield
 
     broadcast_task.cancel()
@@ -333,6 +341,8 @@ async def lifespan(app: FastAPI):
         unifi_task.cancel()
     if ninja_task:
         ninja_task.cancel()
+    if ad_task:
+        ad_task.cancel()
     if syslog_transport:
         syslog_transport.close()
         logger.info("Syslog listener closed")
@@ -372,6 +382,7 @@ app.include_router(ingest.router)
 app.include_router(notifications.router)
 app.include_router(notification_settings.router)
 app.include_router(maintenance.router)
+app.include_router(ad.router)
 app.include_router(network.router)
 app.include_router(ninja.router)
 app.include_router(system.router)
