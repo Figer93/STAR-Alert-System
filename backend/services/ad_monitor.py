@@ -6,13 +6,23 @@ and periodically syncs user accounts into ad_user_status.
 
 Fetches:
   1. Active users (display name, UPN, enabled state, created date)
-  2. MFA registration status via credentialUserRegistrationDetails
-  3. Sign-in activity via $batch (20 per call to avoid N+1)
+  2. MFA registration via /users/{id}/authentication/methods — $batch, 20/call
+     A user has MFA if they have any method other than passwordAuthenticationMethod.
+     Requires: UserAuthenticationMethod.Read.All
+     Gracefully skips (mfa_registered=null) if 403 is returned.
+  3. Sign-in activity via $batch — /users/{id}?$select=signInActivity, 20/call
+     Requires: AuditLog.Read.All
   4. Deleted users via directory/deletedItems
 
 Fires alerts via the existing alert pipeline (source_slug="azure_ad").
 
 Requires env vars: AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET
+
+Required Graph app permissions:
+  User.Read.All                      — list users
+  AuditLog.Read.All                  — sign-in activity
+  UserAuthenticationMethod.Read.All  — authentication methods (MFA check)
+  Directory.Read.All                 — deleted items
 """
 
 from __future__ import annotations
@@ -115,6 +125,7 @@ async def _batch_sign_in(token: str, user_ids: list[str]) -> dict[str, str | Non
     Fetch lastSignInDateTime for each user via the $batch endpoint.
     Sends batches of 20 to stay within Graph API limits.
     Returns {azure_id: lastSignInDateTime | None}.
+    Requires: AuditLog.Read.All
     """
     if not user_ids:
         return {}
@@ -162,6 +173,98 @@ async def _batch_sign_in(token: str, user_ids: list[str]) -> dict[str, str | Non
     return result
 
 
+async def _batch_mfa_check(token: str, user_ids: list[str]) -> dict[str, bool | None]:
+    """
+    Check MFA registration for each user via /users/{id}/authentication/methods,
+    batched in groups of 20 using the $batch endpoint.
+
+    A user has MFA registered if they have at least one authentication method
+    whose @odata.type is NOT #microsoft.graph.passwordAuthenticationMethod.
+
+    Returns {azure_id: True | False | None}.
+      True  — has at least one MFA method
+      False — only password method found (no MFA)
+      None  — could not be determined (403 / error)
+
+    Requires: UserAuthenticationMethod.Read.All
+    Gracefully degrades to None for any 403 responses and logs a clear
+    permission error so the missing grant is visible in Railway logs.
+    """
+    if not user_ids:
+        return {}
+
+    _PASSWORD_METHOD = "#microsoft.graph.passwordAuthenticationMethod"
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type":  "application/json",
+        "Accept":        "application/json",
+    }
+    timeout = aiohttp.ClientTimeout(total=120)
+    result: dict[str, bool | None] = {}
+    _permission_warned = False
+
+    async with aiohttp.ClientSession() as session:
+        for i in range(0, len(user_ids), 20):
+            chunk = user_ids[i : i + 20]
+            requests_body = [
+                {
+                    "id":     uid,
+                    "method": "GET",
+                    "url":    f"/users/{uid}/authentication/methods",
+                }
+                for uid in chunk
+            ]
+            async with session.post(
+                f"{_GRAPH_BASE}/$batch",
+                headers=headers,
+                json={"requests": requests_body},
+                timeout=timeout,
+                ssl=True,
+            ) as resp:
+                if resp.status == 401:
+                    raise PermissionError("Azure AD: 401 on $batch MFA check")
+                if resp.status == 403:
+                    if not _permission_warned:
+                        logger.error(
+                            "Azure AD: 403 on authentication/methods $batch — "
+                            "add UserAuthenticationMethod.Read.All to the app registration. "
+                            "MFA data will be unavailable until the permission is granted."
+                        )
+                        _permission_warned = True
+                    for uid in chunk:
+                        result[uid] = None
+                    continue
+                resp.raise_for_status()
+                data = await resp.json()
+
+            for response in data.get("responses", []):
+                uid    = response.get("id")
+                status = response.get("status")
+                body   = response.get("body") or {}
+
+                if status == 403:
+                    if not _permission_warned:
+                        logger.error(
+                            "Azure AD: 403 on /users/%s/authentication/methods — "
+                            "add UserAuthenticationMethod.Read.All to the app registration. "
+                            "MFA data will be unavailable until the permission is granted.",
+                            uid,
+                        )
+                        _permission_warned = True
+                    result[uid] = None
+                elif status == 200:
+                    methods = body.get("value", [])
+                    result[uid] = any(
+                        m.get("@odata.type") != _PASSWORD_METHOD
+                        for m in methods
+                    )
+                else:
+                    result[uid] = None
+
+    return result
+
+
 # ── Parsing helpers ───────────────────────────────────────────────────────────
 
 def _parse_dt(raw: Any) -> datetime | None:
@@ -195,20 +298,17 @@ async def _sync_once() -> None:
     )
     logger.info("Azure AD: fetched %d active users", len(users))
 
-    # ── Step 2: MFA registration ──────────────────────────────────────────────
-    mfa_by_upn: dict[str, bool] = {}
+    # ── Step 2: MFA registration via authentication/methods $batch ───────────
+    mfa_by_id: dict[str, bool | None] = {}
     try:
-        mfa_rows = await _graph_get_all(
-            token,
-            f"{_GRAPH_BASE}/reports/credentialUserRegistrationDetails?$top=999",
-        )
-        for row in mfa_rows:
-            upn = (row.get("userPrincipalName") or "").lower()
-            if upn:
-                mfa_by_upn[upn] = bool(row.get("isMfaRegistered", False))
-        logger.info("Azure AD: MFA data for %d users", len(mfa_by_upn))
+        user_ids_for_mfa = [u["id"] for u in users if u.get("id")]
+        mfa_by_id = await _batch_mfa_check(token, user_ids_for_mfa)
+        has_data  = sum(1 for v in mfa_by_id.values() if v is not None)
+        logger.info("Azure AD: MFA data for %d/%d users", has_data, len(mfa_by_id))
     except Exception:
-        logger.exception("Azure AD: MFA fetch failed — continuing without MFA data")
+        import traceback
+        logger.error("Azure AD: MFA batch check failed — continuing without MFA data — %s",
+                     traceback.format_exc())
 
     # ── Step 3: Sign-in activity via $batch ───────────────────────────────────
     sign_in_map: dict[str, str | None] = {}
@@ -242,7 +342,7 @@ async def _sync_once() -> None:
                     if not azure_id:
                         continue
                     upn          = user.get("userPrincipalName") or ""
-                    mfa_reg      = mfa_by_upn.get(upn.lower()) if upn else None
+                    mfa_reg      = mfa_by_id.get(azure_id)
                     sign_in_raw  = sign_in_map.get(azure_id)
                     last_sign_in = _parse_dt(sign_in_raw)
                     created_at   = _parse_dt(user.get("createdDateTime"))
@@ -488,7 +588,11 @@ async def ad_sync_loop() -> None:
         )
         return
 
-    logger.info("Azure AD: starting sync loop (interval=%ds)", _INTERVAL)
+    logger.info(
+        "Azure AD: starting sync loop (interval=%ds) — required Graph permissions: "
+        "User.Read.All, AuditLog.Read.All, UserAuthenticationMethod.Read.All, Directory.Read.All",
+        _INTERVAL,
+    )
     while True:
         try:
             await _sync_once()
