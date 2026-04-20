@@ -555,7 +555,12 @@ async def _sync_once(client_id: str, client_secret: str) -> None:
                         matched.append((ninja_id, _parse_last_reboot(dev)))
 
                 except Exception:
-                    logger.exception("NinjaRMM: error processing device %s", dev.get("id"))
+                    logger.exception(
+                        "NinjaRMM: error processing device %s — rolling back transaction",
+                        dev.get("id"),
+                    )
+                    await session.rollback()
+                    raise
 
             # Disk history snapshot — inside same transaction (pure DB)
             try:
