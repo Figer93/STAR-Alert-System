@@ -155,33 +155,38 @@ function PortCard({
   onHover: (p: PortStatus, e: React.MouseEvent) => void
   onLeave: () => void
 }) {
-  const status = port?.status ?? 'empty'
+  const status     = port?.status ?? 'empty'
+  const hasTraffic = status === 'healthy' && ((port?.rx_bytes_rate ?? 0) > 0 || (port?.tx_bytes_rate ?? 0) > 0)
 
   const col = (() => {
     if (status === 'empty')
       return { bg: '#111116', border: 'rgba(255,255,255,0.07)', led: '#26262c', glow: 'none' }
     if (status === 'error')
-      return { bg: active ? '#ef444428' : '#ef44440e', border: active ? '#ef4444aa' : '#ef444438', led: '#ef4444', glow: active ? '0 0 12px #ef444432' : 'none' }
+      return { bg: active ? '#ef444428' : '#ef44440e', border: active ? '#ef4444aa' : '#ef444438', led: '#ef4444', glow: active ? '0 0 12px #ef444432' : '0 0 6px #ef444420' }
     if (status === 'warning')
       return { bg: active ? '#f59e0b20' : '#f59e0b0b', border: active ? '#f59e0b99' : '#f59e0b32', led: '#f59e0b', glow: 'none' }
     if (status === 'uplink')
       return { bg: active ? '#3b82f628' : '#3b82f612', border: active ? '#3b82f6aa' : '#3b82f645', led: '#3b82f6', glow: '0 0 10px #3b82f622' }
-    // healthy — scale fill with traffic
-    const t = port ? Math.min(Math.max(port.rx_bytes_rate, port.tx_bytes_rate) / 50_000_000, 1) : 0
+    // healthy + active traffic — bright green glow
+    if (hasTraffic)
+      return {
+        bg:     active ? '#22c55e28' : '#22c55e12',
+        border: active ? '#22c55eaa' : '#22c55e55',
+        led:    '#22c55e',
+        glow:   active ? '0 0 12px #22c55e44' : '0 0 8px #22c55e28',
+      }
+    // healthy + idle (link up, 0 bps) — dim, no glow
     return {
-      bg:     active ? '#22c55e28' : `rgba(34,197,94,${(0.05 + t * 0.09).toFixed(2)})`,
-      border: active ? '#22c55eaa' : `rgba(34,197,94,${(0.20 + t * 0.30).toFixed(2)})`,
+      bg:     active ? '#22c55e20' : '#22c55e08',
+      border: active ? '#22c55e88' : '#22c55e22',
       led:    '#22c55e',
-      glow:   active ? '0 0 10px #22c55e30' : 'none',
+      glow:   active ? '0 0 8px #22c55e30' : 'none',
     }
   })()
 
   const ledOpacity = (() => {
-    if (status === 'empty') return 0.10
-    if (status === 'healthy' && port) {
-      const t = Math.min(Math.max(port.rx_bytes_rate, port.tx_bytes_rate) / 50_000_000, 1)
-      return 0.42 + t * 0.52
-    }
+    if (status === 'empty')   return 0               // no LED strip on empty ports
+    if (status === 'healthy') return hasTraffic ? 0.88 : 0.32   // bright vs dim
     return 0.88
   })()
 
@@ -347,12 +352,13 @@ function SwitchDiagram({
       {/* Scrollable chassis + device labels */}
       <div style={{ overflowX: 'auto', padding: '0 20px 16px' }}>
 
-        {/* Device label row — floats above ports */}
+        {/* Device label row — floats above ports, paddingLeft matches chassis left padding */}
         <div style={{
-          display:    'flex',
-          gap:        PAIR_GAP,
-          paddingTop: 14,
-          minWidth:   'max-content',
+          display:     'flex',
+          gap:         PAIR_GAP,
+          paddingTop:  14,
+          paddingLeft: 16,
+          minWidth:    'max-content',
         }}>
           {Array.from({ length: numCols }, (_, i) => {
             const topPort    = slotMap.get(i * 2 + 1) ?? null
