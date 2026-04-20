@@ -80,7 +80,7 @@ _RESPONSE_CACHE_TTL = 30.0
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-# period value → (lookback interval, time_bucket bucket size)
+# period value → (lookback interval, bucket size)
 _PERIOD_CONFIG: dict[str, tuple[str, str]] = {
     "15m": ("15 minutes", "30 seconds"),
     "1h":  ("1 hour",     "1 minute"),
@@ -932,7 +932,7 @@ async def get_latency(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Returns aggregated latency time series, bucketed by TimescaleDB time_bucket.
+    Returns aggregated latency time series bucketed by date_trunc.
     Pivots per-target rows into a single wide series for easy charting.
 
     targets=all  — all targets
@@ -951,8 +951,7 @@ async def get_latency(
             target_filter_sql = "AND target_name = ANY(:target_names)"
             params["target_names"] = names
 
-    # latency_metrics is NOT a TimescaleDB hypertable on this Supabase plan,
-    # so time_bucket() is unavailable. Use date_trunc() directly.
+    # TimescaleDB is not installed; use date_trunc() for bucketing.
     trunc_unit = _PERIOD_DATE_TRUNC[period]
     sql = f"""
         SELECT
@@ -1388,9 +1387,9 @@ async def get_device(ip: str, db: AsyncSession = Depends(get_db)):
         LIMIT 20
     """, {"ip": ip})
 
-    # Port errors last 24h — try time_bucket first, fall back to date_trunc
+    # Port errors last 24h — bucketed by hour
     port_errors_24h = await _exec(db, """
-        SELECT time_bucket('1 hour', time) AS bucket,
+        SELECT date_trunc('hour', time) AS bucket,
                SUM(rx_errors_delta) AS rx_errors,
                SUM(tx_errors_delta) AS tx_errors
         FROM switch_port_metrics
@@ -1398,16 +1397,6 @@ async def get_device(ip: str, db: AsyncSession = Depends(get_db)):
           AND time > NOW() - INTERVAL '24 hours'
         GROUP BY bucket ORDER BY bucket ASC
     """, {"ip": ip})
-    if not port_errors_24h:
-        port_errors_24h = await _exec(db, """
-            SELECT date_trunc('hour', time) AS bucket,
-                   SUM(rx_errors_delta) AS rx_errors,
-                   SUM(tx_errors_delta) AS tx_errors
-            FROM switch_port_metrics
-            WHERE device_ip::text = :ip
-              AND time > NOW() - INTERVAL '24 hours'
-            GROUP BY bucket ORDER BY bucket ASC
-        """, {"ip": ip})
 
     # Gateway latency last 24h (shows LAN-segment health for any device).
     # The collector pings the LAN gateway (pfSense) and stores it as
@@ -1415,7 +1404,7 @@ async def get_device(ip: str, db: AsyncSession = Depends(get_db)):
     from backend.config import settings as _settings
     _gw_ip = _settings.LAN_GATEWAY_IP or "10.2.1.253"
     latency_24h = await _exec(db, """
-        SELECT time_bucket('15 minutes', time) AS bucket,
+        SELECT date_trunc('minute', time) + (EXTRACT(minute FROM time)::int / 15) * INTERVAL '15 minutes' AS bucket,
                AVG(rtt_ms) AS avg_rtt,
                AVG(packet_loss_pct) AS avg_loss
         FROM latency_metrics
@@ -1423,16 +1412,6 @@ async def get_device(ip: str, db: AsyncSession = Depends(get_db)):
           AND time > NOW() - INTERVAL '24 hours'
         GROUP BY bucket ORDER BY bucket ASC
     """, {"gw_ip": _gw_ip})
-    if not latency_24h:
-        latency_24h = await _exec(db, """
-            SELECT date_trunc('hour', time) AS bucket,
-                   AVG(rtt_ms) AS avg_rtt,
-                   AVG(packet_loss_pct) AS avg_loss
-            FROM latency_metrics
-            WHERE target_ip::text = :gw_ip
-              AND time > NOW() - INTERVAL '24 hours'
-            GROUP BY bucket ORDER BY bucket ASC
-        """, {"gw_ip": _gw_ip})
 
     # Related incidents
     incidents = await _exec(db,
@@ -1726,7 +1705,7 @@ async def investigate(
 
     # Port error events (bucket by 5 min)
     port_events = await _exec(db, """
-        SELECT time_bucket('5 minutes', time) AS bucket,
+        SELECT date_trunc('minute', time) + (EXTRACT(minute FROM time)::int / 5) * INTERVAL '5 minutes' AS bucket,
                SUM(rx_errors_delta) AS rx_errors,
                SUM(tx_errors_delta) AS tx_errors
         FROM switch_port_metrics
@@ -1747,7 +1726,7 @@ async def investigate(
 
     # Latency spike events (> 50 ms or > 5% loss, bucketed)
     lat_events = await _exec(db, """
-        SELECT time_bucket('5 minutes', time) AS bucket,
+        SELECT date_trunc('minute', time) + (EXTRACT(minute FROM time)::int / 5) * INTERVAL '5 minutes' AS bucket,
                AVG(rtt_ms) AS avg_rtt,
                AVG(packet_loss_pct) AS avg_loss,
                target_type

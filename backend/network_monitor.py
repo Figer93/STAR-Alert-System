@@ -1669,7 +1669,7 @@ async def _cleanup_old_data(db: AsyncSession, *, emergency: bool = False) -> Non
     tables: list[tuple[str, str]] = [
         ("switch_port_metrics", f"time < NOW() - INTERVAL '{port_hours} hours'"),
         ("latency_metrics",     f"time < NOW() - INTERVAL '{latency_hours} hours'"),
-        ("network_events",      f"created_at < NOW() - INTERVAL '{_RETENTION_DAYS_EVENTS} days'"),
+        ("network_events",      f"occurred_at < NOW() - INTERVAL '{_RETENTION_DAYS_EVENTS} days'"),
         ("port_error_events",   f"time < NOW() - INTERVAL '{_RETENTION_DAYS_PORT_ERRORS} days'"),
     ]
 
