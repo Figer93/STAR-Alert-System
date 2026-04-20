@@ -343,9 +343,12 @@ function SwitchDiagram({
 }) {
   const [tip, setTip] = useState<TooltipPos | null>(null)
 
-  // Split regular (1-48) vs SFP+ (49+) ports
-  const sfpPorts     = ports.filter(p => portNum(p) > 48)
-  const regularPorts = ports.filter(p => portNum(p) <= 48 || portNum(p) === 0)
+  // Split regular (1-48) vs SFP+ (49+) by port_id (TEXT in DB).
+  // portNum() reads port_name first — SFP+ ports have names like "SFP+1"
+  // which would extract 1, not 49. Parse port_id directly to avoid that.
+  const portIdNum    = (p: PortStatus) => parseInt(p.port_id, 10)
+  const sfpPorts     = ports.filter(p => portIdNum(p) > 48)
+  const regularPorts = ports.filter(p => { const n = portIdNum(p); return isNaN(n) || n <= 48 })
 
   // Build slot → port map from regular ports only (max 48 slots → 24 columns)
   const slotMap = new Map<number, PortStatus>()
@@ -505,7 +508,7 @@ function SwitchDiagram({
                 .slice()
                 .sort((a, b) => portNum(a) - portNum(b))
                 .map(p => {
-                  const slot   = portNum(p)
+                  const slot   = portIdNum(p) || portNum(p)
                   const active = p.port_id === selected
                   return (
                     <div key={p.port_id} style={{ display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
@@ -828,6 +831,7 @@ export default function NetworkPorts() {
       const res = await fetch('/api/network/ports')
       if (!res.ok) return
       const data: PortStatus[] = await res.json()
+      console.debug('[ports] raw API response: total=%d ids=%s', data.length, data.map(p => p.port_id).join(','))
       setAllPorts(data)
       setLoading(false)
       if (!switchInitRef.current && data.length > 0) {
