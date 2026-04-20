@@ -55,10 +55,11 @@ const HIGH_TRAFFIC_BPS = 1_000_000
 const PAGE_SIZE        = 25
 
 // UniFi-style port panel layout
-const PORT_W   = 56   // port card width px
-const PORT_H   = 72   // port card height px
-const PORT_GAP = 3    // gap between top + bottom within a column pair
-const PAIR_GAP = 8    // horizontal gap between adjacent column pairs
+const PORT_W        = 56   // port card width px
+const PORT_H        = 72   // port card height px
+const PORT_GAP      = 3    // gap between top + bottom within a column pair
+const PAIR_GAP      = 8    // horizontal gap between adjacent column pairs
+const BADGE_AREA_H  = 54   // per-port badge area (icon + label + connector line)
 
 const FILTERS = ['all', 'errors', 'high_traffic', 'empty'] as const
 type Filter   = typeof FILTERS[number]
@@ -175,18 +176,18 @@ function PortCard({
         led:    '#22c55e',
         glow:   active ? '0 0 12px #22c55e44' : '0 0 8px #22c55e28',
       }
-    // healthy + idle (link up, 0 bps) — dim, no glow
+    // healthy + idle (link up, 0 bps) — visible border, dim LED, reduced opacity
     return {
       bg:     active ? '#22c55e20' : '#22c55e08',
-      border: active ? '#22c55e88' : '#22c55e22',
+      border: active ? '#22c55e88' : '#22c55e44',
       led:    '#22c55e',
       glow:   active ? '0 0 8px #22c55e30' : 'none',
     }
   })()
 
   const ledOpacity = (() => {
-    if (status === 'empty')   return 0               // no LED strip on empty ports
-    if (status === 'healthy') return hasTraffic ? 0.88 : 0.32   // bright vs dim
+    if (status === 'empty')   return 0
+    if (status === 'healthy') return hasTraffic ? 0.88 : 0.40
     return 0.88
   })()
 
@@ -217,7 +218,7 @@ function PortCard({
         overflow:       'hidden',
         transition:     'border-color 0.15s, box-shadow 0.15s',
         userSelect:     'none',
-        opacity:        status === 'empty' ? 0.3 : 1,
+        opacity:        status === 'empty' ? 0.20 : (!hasTraffic && status === 'healthy') ? 0.60 : 1,
       }}
     >
       {/* LED strip */}
@@ -274,6 +275,59 @@ function PortCard({
           SFP
         </span>
       )}
+    </div>
+  )
+}
+
+// ── Port Badge (device label + connector, rendered per-port inside chassis) ───
+
+function PortBadge({ port }: { port: PortStatus | null }) {
+  const label = port ? (effectiveDeviceName(port) ?? port.device_ip ?? null) : null
+
+  if (!label) {
+    return <div style={{ height: BADGE_AREA_H, width: PORT_W, flexShrink: 0 }} />
+  }
+
+  return (
+    <div style={{
+      height:         BADGE_AREA_H,
+      width:          PORT_W,
+      flexShrink:     0,
+      display:        'flex',
+      flexDirection:  'column',
+      alignItems:     'center',
+      justifyContent: 'flex-end',
+      gap:            3,
+    }}>
+      <div style={{
+        width:          26,
+        height:         26,
+        borderRadius:   6,
+        background:     'var(--bg-elevated)',
+        border:         '1px solid var(--border)',
+        display:        'flex',
+        alignItems:     'center',
+        justifyContent: 'center',
+        color:          'var(--accent)',
+        flexShrink:     0,
+      }}>
+        <DeviceIcon type={null} />
+      </div>
+      <span style={{
+        fontSize:     8,
+        color:        'var(--text-dim)',
+        maxWidth:     PORT_W - 4,
+        overflow:     'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace:   'nowrap',
+        textAlign:    'center',
+        fontFamily:   'JetBrains Mono, monospace',
+        lineHeight:   1.2,
+      }}>
+        {label}
+      </span>
+      {/* Connector line going straight down to the port card top center */}
+      <div style={{ width: 1, height: 10, background: 'rgba(255,255,255,0.28)', flexShrink: 0 }} />
     </div>
   )
 }
@@ -349,78 +403,8 @@ function SwitchDiagram({
         </span>
       </div>
 
-      {/* Scrollable chassis + device labels */}
+      {/* Scrollable chassis — badge areas live inside each column, one per port */}
       <div style={{ overflowX: 'auto', padding: '0 20px 16px' }}>
-
-        {/* Device label row — floats above ports, paddingLeft matches chassis left padding */}
-        <div style={{
-          display:     'flex',
-          gap:         PAIR_GAP,
-          paddingTop:  14,
-          paddingLeft: 16,
-          minWidth:    'max-content',
-        }}>
-          {Array.from({ length: numCols }, (_, i) => {
-            const topPort    = slotMap.get(i * 2 + 1) ?? null
-            const bottomPort = slotMap.get(i * 2 + 2) ?? null
-            // Prefer top (odd) port's device; fall back to bottom
-            const labelPort  = (topPort && (effectiveDeviceName(topPort) || topPort.device_ip))
-                              ? topPort
-                              : (bottomPort && (effectiveDeviceName(bottomPort) || bottomPort.device_ip))
-                              ? bottomPort
-                              : null
-            const label = labelPort
-              ? (effectiveDeviceName(labelPort) ?? labelPort.device_ip ?? '')
-              : null
-
-            return (
-              <div key={i} style={{
-                width:          PORT_W,
-                flexShrink:     0,
-                display:        'flex',
-                flexDirection:  'column',
-                alignItems:     'center',
-                justifyContent: 'flex-end',
-                height:         68,
-                gap:            3,
-              }}>
-                {labelPort && (
-                  <>
-                    <div style={{
-                      width:          26,
-                      height:         26,
-                      borderRadius:   6,
-                      background:     'var(--bg-elevated)',
-                      border:         '1px solid var(--border)',
-                      display:        'flex',
-                      alignItems:     'center',
-                      justifyContent: 'center',
-                      color:          'var(--accent)',
-                      flexShrink:     0,
-                    }}>
-                      <DeviceIcon type={null} />
-                    </div>
-                    <span style={{
-                      fontSize:     8,
-                      color:        'var(--text-dim)',
-                      maxWidth:     PORT_W - 2,
-                      overflow:     'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace:   'nowrap',
-                      textAlign:    'center',
-                      fontFamily:   'JetBrains Mono, monospace',
-                      lineHeight:   1.2,
-                    }}>
-                      {label}
-                    </span>
-                    {/* Connector line to port below */}
-                    <div style={{ width: 1, height: 14, background: 'rgba(255,255,255,0.28)', flexShrink: 0 }} />
-                  </>
-                )}
-              </div>
-            )
-          })}
-        </div>
 
         {/* Switch chassis */}
         <div style={{
@@ -428,8 +412,9 @@ function SwitchDiagram({
           border:       '1px solid rgba(255,255,255,0.07)',
           borderRadius: 8,
           padding:      '12px 16px',
+          marginTop:    14,
           display:      'inline-flex',
-          alignItems:   'center',
+          alignItems:   'flex-end',
           gap:          PAIR_GAP,
           minWidth:     'max-content',
           boxShadow:    'inset 0 2px 10px rgba(0,0,0,0.5)',
@@ -441,11 +426,16 @@ function SwitchDiagram({
             const botActive  = bottomPort?.port_id === selected
 
             return (
-              <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: PORT_GAP, flexShrink: 0 }}>
+              <div key={i} style={{ display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
+                {/* Badge sits directly above top (odd) port */}
+                <PortBadge port={topPort} />
                 <PortCard
                   port={topPort}     slot={i * 2 + 1} active={!!topActive}
                   onClick={onSelect} onHover={handleHover} onLeave={handleLeave}
                 />
+                <div style={{ height: PORT_GAP }} />
+                {/* Badge sits directly above bottom (even) port */}
+                <PortBadge port={bottomPort} />
                 <PortCard
                   port={bottomPort}  slot={i * 2 + 2} active={!!botActive}
                   onClick={onSelect} onHover={handleHover} onLeave={handleLeave}
@@ -464,7 +454,7 @@ function SwitchDiagram({
             marginLeft:     8,
             paddingLeft:    12,
             borderLeft:     '1px solid rgba(255,255,255,0.06)',
-            height:         PORT_H * 2 + PORT_GAP,
+            height:         (BADGE_AREA_H + PORT_H) * 2 + PORT_GAP,
             flexShrink:     0,
           }}>
             <div style={{ width: 5, height: 5, borderRadius: '50%', background: '#22c55e', boxShadow: '0 0 5px #22c55e' }} />
