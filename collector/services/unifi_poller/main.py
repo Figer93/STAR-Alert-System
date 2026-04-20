@@ -159,6 +159,11 @@ def _parse_switch_ports(
             client_info = port_map.get((switch_id, int(port_idx or 0)), {})
             port_label  = port.get("name", "") or f"Port {port_idx}"
 
+            # Per-port speed from UniFi (Mbps). SFP+ reports 10000.
+            # Used to compute the sanity cap for delta bytes.
+            port_speed_mbps  = int(port.get("speed") or 1000) or 1000
+            max_delta_bytes  = int(port_speed_mbps * 1_000_000 / 8 * POLL_INTERVAL * 1.05)
+
             # Raw cumulative counters from UniFi (since switch boot)
             rx_bytes_raw  = port.get("rx_bytes")  or 0
             tx_bytes_raw  = port.get("tx_bytes")  or 0
@@ -187,13 +192,15 @@ def _parse_switch_ports(
                         switch_id, port_idx,
                     )
 
-                # Sanity guard: >10 GB transferred in one 60-second poll cycle
-                # is physically impossible on a 1 Gbps port — discard the row.
-                elif rx_bytes_delta > 10_000_000_000 or tx_bytes_delta > 10_000_000_000:
+                # Sanity guard: delta exceeding the physical maximum for this
+                # port's link speed (with 5 % headroom) is impossible — discard.
+                # Cap is per-port: 1G → ~7.9 GB/cycle, 10G SFP+ → ~79 GB/cycle.
+                elif rx_bytes_delta > max_delta_bytes or tx_bytes_delta > max_delta_bytes:
                     log.warning(
-                        "Implausible delta on switch=%s port=%s (rx_delta=%d "
-                        "tx_delta=%d) — discarding row",
-                        switch_id, port_idx, rx_bytes_delta, tx_bytes_delta,
+                        "Implausible delta on switch=%s port=%s speed=%dMbps "
+                        "(rx_delta=%d tx_delta=%d cap=%d) — discarding row",
+                        switch_id, port_idx, port_speed_mbps,
+                        rx_bytes_delta, tx_bytes_delta, max_delta_bytes,
                     )
                     _prev_readings[key] = {
                         "rx_bytes":  rx_bytes_raw,
@@ -342,7 +349,16 @@ def _write_port_metrics(rows: list[dict]) -> None:
         return
     for row in rows:
         write_local("/api/collector/metrics/ports", row)
-    log.info("Buffered %d switch port rows", len(rows))
+    # Per-switch breakdown so we can confirm SFP+ ports (idx > 48) are included
+    from collections import Counter
+    by_switch: Counter = Counter(row.get("switch_id", "?") for row in rows)
+    sfp_count = sum(1 for row in rows if int(row.get("port_id") or 0) > 48)
+    log.info(
+        "Buffered %d port rows — per switch: %s — SFP+ (idx>48): %d",
+        len(rows),
+        ", ".join(f"{sw}:{cnt}" for sw, cnt in by_switch.items()),
+        sfp_count,
+    )
 
 
 def _write_devices(rows: list[dict]) -> None:

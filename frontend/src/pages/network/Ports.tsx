@@ -343,10 +343,14 @@ function SwitchDiagram({
 }) {
   const [tip, setTip] = useState<TooltipPos | null>(null)
 
-  // Build slot → port map by port number
+  // Split regular (1-48) vs SFP+ (49+) ports
+  const sfpPorts     = ports.filter(p => portNum(p) > 48)
+  const regularPorts = ports.filter(p => portNum(p) <= 48 || portNum(p) === 0)
+
+  // Build slot → port map from regular ports only (max 48 slots → 24 columns)
   const slotMap = new Map<number, PortStatus>()
   let maxSlot = 0
-  for (const p of ports) {
+  for (const p of regularPorts) {
     const n = portNum(p)
     if (n > 0) { slotMap.set(n, p); maxSlot = Math.max(maxSlot, n) }
   }
@@ -354,7 +358,7 @@ function SwitchDiagram({
 
   // Un-numbered ports overflow beyond maxSlot
   let overflow = maxSlot + 1
-  for (const p of ports) {
+  for (const p of regularPorts) {
     if (portNum(p) === 0) slotMap.set(overflow++, p)
   }
 
@@ -462,8 +466,63 @@ function SwitchDiagram({
           </div>
         </div>
 
+        {/* SFP+ section — ports 49+ rendered separately below the main chassis */}
+        {sfpPorts.length > 0 && (
+          <div style={{ marginTop: 14 }}>
+            <div style={{
+              display:       'flex',
+              alignItems:    'center',
+              gap:           8,
+              marginBottom:  6,
+              paddingLeft:   2,
+            }}>
+              <span style={{
+                fontSize:      9,
+                fontFamily:    'JetBrains Mono, monospace',
+                fontWeight:    700,
+                letterSpacing: '0.12em',
+                textTransform: 'uppercase',
+                color:         '#3b82f6',
+              }}>
+                SFP+
+              </span>
+              <div style={{ height: 1, flex: 1, background: 'rgba(59,130,246,0.18)' }} />
+              <span style={{ fontSize: 9, color: 'var(--text-dim)', fontFamily: 'JetBrains Mono, monospace' }}>
+                {sfpPorts.length} port{sfpPorts.length !== 1 ? 's' : ''}
+              </span>
+            </div>
+            <div style={{
+              background:   '#0b0b0e',
+              border:       '1px solid rgba(59,130,246,0.18)',
+              borderRadius: 8,
+              padding:      '12px 16px',
+              display:      'inline-flex',
+              alignItems:   'flex-end',
+              gap:          PAIR_GAP,
+              boxShadow:    'inset 0 2px 10px rgba(0,0,0,0.5)',
+            }}>
+              {sfpPorts
+                .slice()
+                .sort((a, b) => portNum(a) - portNum(b))
+                .map(p => {
+                  const slot   = portNum(p)
+                  const active = p.port_id === selected
+                  return (
+                    <div key={p.port_id} style={{ display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
+                      <PortBadge port={p} />
+                      <PortCard
+                        port={p}        slot={slot}  active={active}
+                        onClick={onSelect} onHover={handleHover} onLeave={handleLeave}
+                      />
+                    </div>
+                  )
+                })}
+            </div>
+          </div>
+        )}
+
         {/* Legend */}
-        <div style={{ display: 'flex', gap: 14, marginTop: 10, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 14, marginTop: 12, flexWrap: 'wrap' }}>
           {(Object.entries(STATUS_COLORS) as [PortStatus['status'], string][]).map(([s, c]) => (
             <span key={s} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 10, color: 'var(--text-dim)' }}>
               <span style={{ width: 12, height: 4, borderRadius: 2, background: c, display: 'inline-block', opacity: 0.85 }} />
