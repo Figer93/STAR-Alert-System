@@ -55,10 +55,10 @@ const HIGH_TRAFFIC_BPS = 1_000_000
 const PAGE_SIZE        = 25
 
 // UniFi-style port panel layout
-const PORT_W   = 44   // port card width px
-const PORT_H   = 58   // port card height px
+const PORT_W   = 56   // port card width px
+const PORT_H   = 72   // port card height px
 const PORT_GAP = 3    // gap between top + bottom within a column pair
-const PAIR_GAP = 7    // horizontal gap between adjacent column pairs
+const PAIR_GAP = 8    // horizontal gap between adjacent column pairs
 
 const FILTERS = ['all', 'errors', 'high_traffic', 'empty'] as const
 type Filter   = typeof FILTERS[number]
@@ -212,13 +212,14 @@ function PortCard({
         overflow:       'hidden',
         transition:     'border-color 0.15s, box-shadow 0.15s',
         userSelect:     'none',
+        opacity:        status === 'empty' ? 0.3 : 1,
       }}
     >
       {/* LED strip */}
       <div style={{
         position:     'absolute',
         top: 0, left: 0, right: 0,
-        height:       5,
+        height:       7,
         background:   col.led,
         opacity:      ledOpacity,
         transition:   'opacity 0.3s',
@@ -407,7 +408,7 @@ function SwitchDiagram({
                       {label}
                     </span>
                     {/* Connector line to port below */}
-                    <div style={{ width: 1, height: 6, background: 'rgba(255,255,255,0.12)', flexShrink: 0 }} />
+                    <div style={{ width: 1, height: 14, background: 'rgba(255,255,255,0.28)', flexShrink: 0 }} />
                   </>
                 )}
               </div>
@@ -807,7 +808,16 @@ export default function NetworkPorts() {
 
   const switchPorts = allPorts.filter(p => p.switch_id === selectedSwitch)
 
-  const filtered = switchPorts.filter(p => {
+  // Summary counts (all switch ports, unfiltered)
+  const healthyCount = switchPorts.filter(p => p.status === 'healthy').length
+  const emptyCount   = switchPorts.filter(p => p.status === 'empty').length
+
+  // Table base: only ports with errors or an assigned device name
+  const tableBase = switchPorts.filter(p =>
+    (p.rx_errors_1h + p.tx_errors_1h) > 0 || effectiveDeviceName(p) !== null
+  )
+
+  const filtered = tableBase.filter(p => {
     if (search) {
       const q = search.toLowerCase()
       if (
@@ -974,7 +984,30 @@ export default function NetworkPorts() {
           </div>
         )}
 
-        {/* Port table */}
+        {/* Port summary + table */}
+        {!loading && switchPorts.length > 0 && (
+          <div style={{
+            display:    'flex',
+            alignItems: 'center',
+            gap:        16,
+            padding:    '2px 4px',
+            flexShrink: 0,
+          }}>
+            {healthyCount > 0 && (
+              <span style={{ fontSize: 11, color: 'var(--text-dim)', display: 'flex', alignItems: 'center', gap: 5 }}>
+                <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#22c55e', display: 'inline-block', boxShadow: '0 0 4px #22c55e' }} />
+                {healthyCount} healthy
+              </span>
+            )}
+            {emptyCount > 0 && (
+              <span style={{ fontSize: 11, color: 'var(--text-dim)', display: 'flex', alignItems: 'center', gap: 5 }}>
+                <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--border-bright)', display: 'inline-block' }} />
+                {emptyCount} empty
+              </span>
+            )}
+          </div>
+        )}
+
         {!loading && filtered.length > 0 && (
           <div className="card" style={{ overflow: 'auto', flexShrink: 0, width: '100%' }}>
             <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '8px 12px 0' }}>
