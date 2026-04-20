@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  Plug, Search, X,
+  Plug, Search, X, Zap,
   ArrowDown, ArrowUp, ChevronUp, ChevronDown,
   Server, Monitor, Wifi as WifiIcon, Router, HardDrive, Download,
 } from 'lucide-react'
@@ -28,6 +28,8 @@ interface PortStatus {
   last_error_time: string | null
   errors_24h:      Array<{ time: string; rx_errors: number; tx_errors: number }>
   throughput_1h:   Array<{ time: string; rx_bytes_rate: number; tx_bytes_rate: number }>
+  link_speed_mbps?: number
+  poe_watts?:       number
 }
 
 interface DeviceDetail {
@@ -49,9 +51,14 @@ const STATUS_COLORS: Record<PortStatus['status'], string> = {
   uplink:  '#3b82f6',
 }
 
-const PORTS_PER_ROW    = 24
 const HIGH_TRAFFIC_BPS = 1_000_000
 const PAGE_SIZE        = 25
+
+// UniFi-style port panel layout
+const PORT_W   = 44   // port card width px
+const PORT_H   = 58   // port card height px
+const PORT_GAP = 3    // gap between top + bottom within a column pair
+const PAIR_GAP = 7    // horizontal gap between adjacent column pairs
 
 const FILTERS = ['all', 'errors', 'high_traffic', 'empty'] as const
 type Filter   = typeof FILTERS[number]
@@ -136,7 +143,136 @@ function PortTooltip({ port: p, x, y }: TooltipPos) {
   )
 }
 
-// ── Switch Diagram ────────────────────────────────────────────────────────────
+// ── Port Card (UniFi-style) ───────────────────────────────────────────────────
+
+function PortCard({
+  port, slot, active, onClick, onHover, onLeave,
+}: {
+  port:    PortStatus | null
+  slot:    number
+  active:  boolean
+  onClick: (p: PortStatus) => void
+  onHover: (p: PortStatus, e: React.MouseEvent) => void
+  onLeave: () => void
+}) {
+  const status = port?.status ?? 'empty'
+
+  const col = (() => {
+    if (status === 'empty')
+      return { bg: '#111116', border: 'rgba(255,255,255,0.07)', led: '#26262c', glow: 'none' }
+    if (status === 'error')
+      return { bg: active ? '#ef444428' : '#ef44440e', border: active ? '#ef4444aa' : '#ef444438', led: '#ef4444', glow: active ? '0 0 12px #ef444432' : 'none' }
+    if (status === 'warning')
+      return { bg: active ? '#f59e0b20' : '#f59e0b0b', border: active ? '#f59e0b99' : '#f59e0b32', led: '#f59e0b', glow: 'none' }
+    if (status === 'uplink')
+      return { bg: active ? '#3b82f628' : '#3b82f612', border: active ? '#3b82f6aa' : '#3b82f645', led: '#3b82f6', glow: '0 0 10px #3b82f622' }
+    // healthy — scale fill with traffic
+    const t = port ? Math.min(Math.max(port.rx_bytes_rate, port.tx_bytes_rate) / 50_000_000, 1) : 0
+    return {
+      bg:     active ? '#22c55e28' : `rgba(34,197,94,${(0.05 + t * 0.09).toFixed(2)})`,
+      border: active ? '#22c55eaa' : `rgba(34,197,94,${(0.20 + t * 0.30).toFixed(2)})`,
+      led:    '#22c55e',
+      glow:   active ? '0 0 10px #22c55e30' : 'none',
+    }
+  })()
+
+  const ledOpacity = (() => {
+    if (status === 'empty') return 0.10
+    if (status === 'healthy' && port) {
+      const t = Math.min(Math.max(port.rx_bytes_rate, port.tx_bytes_rate) / 50_000_000, 1)
+      return 0.42 + t * 0.52
+    }
+    return 0.88
+  })()
+
+  const hasPoe   = (port?.poe_watts ?? 0) > 0
+  const poeWatts = port?.poe_watts ?? 0
+
+  return (
+    <div
+      onClick={()   => port && onClick(port)}
+      onMouseEnter={e => port && onHover(port, e)}
+      onMouseMove={e  => port && onHover(port, e)}
+      onMouseLeave={onLeave}
+      style={{
+        width:          PORT_W,
+        height:         PORT_H,
+        background:     col.bg,
+        border:         `1px solid ${col.border}`,
+        borderRadius:   5,
+        cursor:         port ? 'pointer' : 'default',
+        position:       'relative',
+        display:        'flex',
+        flexDirection:  'column',
+        alignItems:     'center',
+        justifyContent: 'flex-end',
+        paddingBottom:  7,
+        boxShadow:      active ? `0 0 0 2px #60a5fa88, ${col.glow}` : col.glow,
+        flexShrink:     0,
+        overflow:       'hidden',
+        transition:     'border-color 0.15s, box-shadow 0.15s',
+        userSelect:     'none',
+      }}
+    >
+      {/* LED strip */}
+      <div style={{
+        position:     'absolute',
+        top: 0, left: 0, right: 0,
+        height:       5,
+        background:   col.led,
+        opacity:      ledOpacity,
+        transition:   'opacity 0.3s',
+        borderRadius: '4px 4px 0 0',
+      }} />
+
+      {/* PoE badge */}
+      {hasPoe && (
+        <div style={{
+          position:   'absolute',
+          top:        8,
+          right:      4,
+          display:    'flex',
+          alignItems: 'center',
+          gap:        1,
+        }}>
+          <Zap size={7} strokeWidth={2.5} style={{ color: '#f59e0b', fill: '#f59e0b' }} />
+          <span style={{ fontSize: 6.5, fontFamily: 'JetBrains Mono, monospace', color: '#f59e0b', lineHeight: 1 }}>
+            {poeWatts}W
+          </span>
+        </div>
+      )}
+
+      {/* Port number */}
+      <span style={{
+        fontSize:   14,
+        fontFamily: 'JetBrains Mono, monospace',
+        fontWeight: 700,
+        lineHeight: 1,
+        color: status === 'empty' ? 'rgba(255,255,255,0.14)'
+             : active            ? 'var(--text-bright)'
+             :                     'rgba(255,255,255,0.50)',
+      }}>
+        {slot}
+      </span>
+
+      {/* SFP tag for uplinks */}
+      {status === 'uplink' && (
+        <span style={{
+          fontSize:      7,
+          fontFamily:    'monospace',
+          color:         'rgba(59,130,246,0.55)',
+          marginTop:     2,
+          letterSpacing: '0.08em',
+          textTransform: 'uppercase',
+        }}>
+          SFP
+        </span>
+      )}
+    </div>
+  )
+}
+
+// ── Switch Diagram (UniFi-style panel) ───────────────────────────────────────
 
 function SwitchDiagram({
   ports, selected, onSelect,
@@ -147,168 +283,197 @@ function SwitchDiagram({
 }) {
   const [tip, setTip] = useState<TooltipPos | null>(null)
 
+  // Build slot → port map by port number
   const slotMap = new Map<number, PortStatus>()
-  let maxSlot = PORTS_PER_ROW
+  let maxSlot = 0
   for (const p of ports) {
     const n = portNum(p)
-    if (n > 0) {
-      slotMap.set(n, p)
-      if (n > maxSlot) maxSlot = Math.ceil(n / PORTS_PER_ROW) * PORTS_PER_ROW
-    }
+    if (n > 0) { slotMap.set(n, p); maxSlot = Math.max(maxSlot, n) }
   }
+  if (maxSlot === 0) maxSlot = 24
+
+  // Un-numbered ports overflow beyond maxSlot
   let overflow = maxSlot + 1
   for (const p of ports) {
     if (portNum(p) === 0) slotMap.set(overflow++, p)
   }
 
-  const total = Math.max(maxSlot, overflow - 1)
-  const slots = Array.from({ length: total }, (_, i) => i + 1)
+  const totalSlots = Math.max(maxSlot, overflow - 1)
+  const numCols    = Math.ceil(totalSlots / 2)
 
-  // Rows of 24
-  const rows: number[][] = []
-  for (let i = 0; i < slots.length; i += PORTS_PER_ROW) {
-    rows.push(slots.slice(i, i + PORTS_PER_ROW))
-  }
+  const handleHover = useCallback(
+    (p: PortStatus, e: React.MouseEvent) => setTip({ port: p, x: e.clientX, y: e.clientY }),
+    [],
+  )
+  const handleLeave = useCallback(() => setTip(null), [])
+
+  const activePorts = ports.filter(p => p.status !== 'empty').length
+  const hasError    = ports.some(p => p.status === 'error')
+  const hasWarning  = ports.some(p => p.status === 'warning')
+  const statusLed   = hasError ? '#ef4444' : hasWarning ? '#f59e0b' : '#22c55e'
 
   return (
     <div style={{
-      width:        '100%',
-      background:   '#0f0f12',
-      border:       '1px solid rgba(255,255,255,0.06)',
-      borderRadius: 8,
-      padding:      '20px 24px',
+      background:   'var(--bg-surface)',
+      border:       '1px solid var(--border)',
+      borderRadius: 10,
     }}>
-      {/* Chassis rows */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {rows.map((row, ri) => (
-          <div key={ri} style={{ display: 'flex', flexWrap: 'nowrap', gap: 3, alignItems: 'center' }}>
-            {row.map(slot => {
-              const p      = slotMap.get(slot)
-              const status = p?.status ?? 'empty'
-              const color  = STATUS_COLORS[status]
-              const active = p?.port_id === selected
-
-              const ledBg: string = {
-                healthy: '#22c55e',
-                error:   '#ef4444',
-                warning: '#f59e0b',
-                empty:   '#3f3f46',
-                uplink:  '#60a5fa',
-              }[status]
-
-              const ledShadow: string = {
-                healthy: '0 0 6px #22c55e, 0 0 12px #22c55e40',
-                error:   '0 0 6px #ef4444',
-                warning: '0 0 6px #f59e0b',
-                uplink:  '0 0 6px #60a5fa, 0 0 12px #60a5fa40',
-                empty:   'none',
-              }[status]
-
-              // Traffic-scaled brightness for healthy ports
-              const maxRate = p ? Math.max(p.rx_bytes_rate, p.tx_bytes_rate) : 0
-              const trafficLevel = status === 'healthy' && maxRate > 0
-                ? Math.min(maxRate / 100_000_000, 1)  // 0→1 over 0–100 Mbps
-                : 0
-              // Idle healthy ports get dim bg (~20% alpha), busy ports ramp up to ~70%
-              const healthyAlpha = status === 'healthy'
-                ? Math.round(20 + trafficLevel * 50).toString(16).padStart(2, '0')
-                : '33'
-
-              const portBg = status === 'empty'
-                ? '#1c1c1f'
-                : active
-                  ? color
-                  : status === 'healthy'
-                    ? `${color}${healthyAlpha}`
-                    : `${color}33`
-
-              const isUplink = status === 'uplink'
-              const portWidth  = isUplink ? 48 : 40
-              const portHeight = isUplink ? 88 : 80
-              const portBorder = isUplink
-                ? `2px solid ${active ? color : `${color}99`}`
-                : `1px solid ${active ? color : `${color}55`}`
-              const portShadow = isUplink && !active
-                ? `inset 0 0 0 1px ${color}33, 0 0 8px ${color}22`
-                : undefined
-
-              return (
-                <div
-                  key={slot}
-                  title={p ? `${p.port_name ?? p.port_id}${p.device_ip ? ` — ${p.device_ip}` : ''}` : undefined}
-                  onClick={() => p && onSelect(p)}
-                  onMouseEnter={e => p && setTip({ port: p, x: e.clientX, y: e.clientY })}
-                  onMouseMove={e  => p && tip && setTip({ port: p, x: e.clientX, y: e.clientY })}
-                  onMouseLeave={() => setTip(null)}
-                  style={{
-                    width:        portWidth,
-                    height:       portHeight,
-                    borderRadius: isUplink ? 3 : 2,
-                    background:   portBg,
-                    border:       portBorder,
-                    boxShadow:    portShadow,
-                    outline:      active ? '1px solid #60a5fa' : 'none',
-                    outlineOffset: active ? 2 : 0,
-                    cursor:       p ? 'pointer' : 'default',
-                    transition:   'filter 0.1s',
-                    filter:       'brightness(1)',
-                    flexShrink:   0,
-                    position:     'relative',
-                    display:      'flex',
-                    flexDirection:'column',
-                    alignItems:   'center',
-                    justifyContent: 'space-between',
-                    paddingBottom: 3,
-                  }}
-                  onMouseOver={e => { if (p) (e.currentTarget as HTMLDivElement).style.filter = 'brightness(1.3)' }}
-                  onMouseOut={e  => { (e.currentTarget as HTMLDivElement).style.filter = 'brightness(1)' }}
-                >
-                  {/* LED dot */}
-                  <div style={{
-                    width:        3,
-                    height:       3,
-                    borderRadius: '50%',
-                    marginTop:    2,
-                    background:   ledBg,
-                    boxShadow:    ledShadow,
-                    flexShrink:   0,
-                  }} />
-                  {/* Port number */}
-                  <span style={{
-                    fontSize:   6,
-                    fontFamily: 'monospace',
-                    color:      'rgba(255,255,255,0.3)',
-                    lineHeight: 1,
-                    userSelect: 'none',
-                  }}>
-                    {slot}
-                  </span>
-                </div>
-              )
-            })}
-            {/* Row label */}
-            <span style={{
-              fontSize:   10,
-              color:      '#52525b',
-              marginLeft: 6,
-              lineHeight: 1,
-              flexShrink: 0,
-              userSelect: 'none',
-            }}>
-              {ri * PORTS_PER_ROW + 1}–{Math.min((ri + 1) * PORTS_PER_ROW, total)}
-            </span>
-          </div>
-        ))}
+      {/* Switch header */}
+      <div style={{
+        display:       'flex',
+        alignItems:    'center',
+        gap:           10,
+        padding:       '9px 16px',
+        borderBottom:  '1px solid var(--border-dim)',
+        background:    'var(--bg-raised)',
+        borderRadius:  '10px 10px 0 0',
+      }}>
+        <div style={{
+          width: 7, height: 7, borderRadius: '50%',
+          background: statusLed,
+          boxShadow:  `0 0 6px ${statusLed}`,
+          flexShrink: 0,
+        }} />
+        <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-head)' }}>
+          {ports[0]?.switch_name ?? 'Switch'}
+        </span>
+        <span style={{ color: 'rgba(255,255,255,0.15)', fontSize: 14, lineHeight: 1 }}>·</span>
+        <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'JetBrains Mono, monospace' }}>
+          {activePorts} / {totalSlots} ports active
+        </span>
       </div>
 
-      {/* Legend */}
-      <div style={{ display: 'flex', gap: 14, marginTop: 10, flexWrap: 'wrap' }}>
-        {(Object.entries(STATUS_COLORS) as [PortStatus['status'], string][]).map(([s, c]) => (
-          <span key={s} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: 'var(--text-dim)' }}>
-            <span style={{ width: 9, height: 9, borderRadius: 1, background: c, display: 'inline-block' }} />
-            {s.charAt(0).toUpperCase() + s.slice(1)}
-          </span>
-        ))}
+      {/* Scrollable chassis + device labels */}
+      <div style={{ overflowX: 'auto', padding: '0 20px 16px' }}>
+
+        {/* Device label row — floats above ports */}
+        <div style={{
+          display:    'flex',
+          gap:        PAIR_GAP,
+          paddingTop: 14,
+          minWidth:   'max-content',
+        }}>
+          {Array.from({ length: numCols }, (_, i) => {
+            const topPort    = slotMap.get(i * 2 + 1) ?? null
+            const bottomPort = slotMap.get(i * 2 + 2) ?? null
+            // Prefer top (odd) port's device; fall back to bottom
+            const labelPort  = (topPort && (effectiveDeviceName(topPort) || topPort.device_ip))
+                              ? topPort
+                              : (bottomPort && (effectiveDeviceName(bottomPort) || bottomPort.device_ip))
+                              ? bottomPort
+                              : null
+            const label = labelPort
+              ? (effectiveDeviceName(labelPort) ?? labelPort.device_ip ?? '')
+              : null
+
+            return (
+              <div key={i} style={{
+                width:          PORT_W,
+                flexShrink:     0,
+                display:        'flex',
+                flexDirection:  'column',
+                alignItems:     'center',
+                justifyContent: 'flex-end',
+                height:         68,
+                gap:            3,
+              }}>
+                {labelPort && (
+                  <>
+                    <div style={{
+                      width:          26,
+                      height:         26,
+                      borderRadius:   6,
+                      background:     'var(--bg-elevated)',
+                      border:         '1px solid var(--border)',
+                      display:        'flex',
+                      alignItems:     'center',
+                      justifyContent: 'center',
+                      color:          'var(--accent)',
+                      flexShrink:     0,
+                    }}>
+                      <DeviceIcon type={null} />
+                    </div>
+                    <span style={{
+                      fontSize:     8,
+                      color:        'var(--text-dim)',
+                      maxWidth:     PORT_W - 2,
+                      overflow:     'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace:   'nowrap',
+                      textAlign:    'center',
+                      fontFamily:   'JetBrains Mono, monospace',
+                      lineHeight:   1.2,
+                    }}>
+                      {label}
+                    </span>
+                    {/* Connector line to port below */}
+                    <div style={{ width: 1, height: 6, background: 'rgba(255,255,255,0.12)', flexShrink: 0 }} />
+                  </>
+                )}
+              </div>
+            )
+          })}
+        </div>
+
+        {/* Switch chassis */}
+        <div style={{
+          background:   '#0b0b0e',
+          border:       '1px solid rgba(255,255,255,0.07)',
+          borderRadius: 8,
+          padding:      '12px 16px',
+          display:      'inline-flex',
+          alignItems:   'center',
+          gap:          PAIR_GAP,
+          minWidth:     'max-content',
+          boxShadow:    'inset 0 2px 10px rgba(0,0,0,0.5)',
+        }}>
+          {Array.from({ length: numCols }, (_, i) => {
+            const topPort    = slotMap.get(i * 2 + 1) ?? null
+            const bottomPort = slotMap.get(i * 2 + 2) ?? null
+            const topActive  = topPort?.port_id    === selected
+            const botActive  = bottomPort?.port_id === selected
+
+            return (
+              <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: PORT_GAP, flexShrink: 0 }}>
+                <PortCard
+                  port={topPort}     slot={i * 2 + 1} active={!!topActive}
+                  onClick={onSelect} onHover={handleHover} onLeave={handleLeave}
+                />
+                <PortCard
+                  port={bottomPort}  slot={i * 2 + 2} active={!!botActive}
+                  onClick={onSelect} onHover={handleHover} onLeave={handleLeave}
+                />
+              </div>
+            )
+          })}
+
+          {/* Power / status indicator block */}
+          <div style={{
+            display:        'flex',
+            flexDirection:  'column',
+            alignItems:     'center',
+            justifyContent: 'center',
+            gap:            6,
+            marginLeft:     8,
+            paddingLeft:    12,
+            borderLeft:     '1px solid rgba(255,255,255,0.06)',
+            height:         PORT_H * 2 + PORT_GAP,
+            flexShrink:     0,
+          }}>
+            <div style={{ width: 5, height: 5, borderRadius: '50%', background: '#22c55e', boxShadow: '0 0 5px #22c55e' }} />
+            <div style={{ width: 5, height: 5, borderRadius: '50%', background: '#3b82f6', boxShadow: '0 0 5px #3b82f6', opacity: 0.5 }} />
+          </div>
+        </div>
+
+        {/* Legend */}
+        <div style={{ display: 'flex', gap: 14, marginTop: 10, flexWrap: 'wrap' }}>
+          {(Object.entries(STATUS_COLORS) as [PortStatus['status'], string][]).map(([s, c]) => (
+            <span key={s} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 10, color: 'var(--text-dim)' }}>
+              <span style={{ width: 12, height: 4, borderRadius: 2, background: c, display: 'inline-block', opacity: 0.85 }} />
+              {s.charAt(0).toUpperCase() + s.slice(1)}
+            </span>
+          ))}
+        </div>
       </div>
 
       {tip && <PortTooltip {...tip} />}

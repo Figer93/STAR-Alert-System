@@ -12,6 +12,13 @@ function fmtDate(iso: string | null): string {
   })
 }
 
+function fmtDateShort(iso: string | null): string {
+  if (!iso) return '--'
+  return new Date(iso).toLocaleDateString('en-GB', {
+    day: '2-digit', month: 'short', year: 'numeric',
+  })
+}
+
 const SEVEN_DAYS_MS  = 7  * 24 * 60 * 60 * 1000
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000
 
@@ -25,16 +32,51 @@ function isInactive(u: AdUserRow): boolean {
   return Date.now() - new Date(u.last_sign_in).getTime() > THIRTY_DAYS_MS
 }
 
+function daysUntilExpiry(iso: string | null): number | null {
+  if (!iso) return null
+  return Math.floor((new Date(iso).getTime() - Date.now()) / 86400000)
+}
+
+function flagEmoji(country: string | null): string {
+  if (!country) return ''
+  const trimmed = country.trim()
+  // ISO 2-letter code → regional indicator emoji
+  if (trimmed.length === 2) {
+    return trimmed.toUpperCase().split('').map(c =>
+      String.fromCodePoint(c.charCodeAt(0) - 65 + 0x1F1E6)
+    ).join('')
+  }
+  // Common full country names
+  const map: Record<string, string> = {
+    'united kingdom': '🇬🇧', 'england': '🇬🇧',
+    'united states': '🇺🇸', 'usa': '🇺🇸',
+    'germany': '🇩🇪', 'france': '🇫🇷', 'netherlands': '🇳🇱',
+    'belgium': '🇧🇪', 'poland': '🇵🇱', 'spain': '🇪🇸',
+    'italy': '🇮🇹', 'india': '🇮🇳', 'china': '🇨🇳',
+    'russia': '🇷🇺', 'australia': '🇦🇺', 'canada': '🇨🇦',
+    'sweden': '🇸🇪', 'norway': '🇳🇴', 'denmark': '🇩🇰',
+    'finland': '🇫🇮', 'ireland': '🇮🇪', 'switzerland': '🇨🇭',
+    'austria': '🇦🇹', 'portugal': '🇵🇹', 'romania': '🇷🇴',
+    'ukraine': '🇺🇦', 'turkey': '🇹🇷', 'israel': '🇮🇱',
+    'south africa': '🇿🇦', 'brazil': '🇧🇷', 'mexico': '🇲🇽',
+    'japan': '🇯🇵', 'south korea': '🇰🇷', 'singapore': '🇸🇬',
+    'new zealand': '🇳🇿', 'uae': '🇦🇪', 'united arab emirates': '🇦🇪',
+  }
+  return map[trimmed.toLowerCase()] ?? '🌐'
+}
+
 // ── Tabs ──────────────────────────────────────────────────────────────────────
 
-type Tab = 'all' | 'no_mfa' | 'inactive' | 'disabled' | 'deleted'
+type Tab = 'all' | 'no_mfa' | 'inactive' | 'disabled' | 'deleted' | 'foreign' | 'pwd_expiring'
 
 const TABS: { id: Tab; label: string }[] = [
-  { id: 'all',      label: 'All'      },
-  { id: 'no_mfa',   label: 'No MFA'   },
-  { id: 'inactive', label: 'Inactive' },
-  { id: 'disabled', label: 'Disabled' },
-  { id: 'deleted',  label: 'Deleted'  },
+  { id: 'all',          label: 'All'          },
+  { id: 'no_mfa',       label: 'No MFA'       },
+  { id: 'inactive',     label: 'Inactive'     },
+  { id: 'disabled',     label: 'Disabled'     },
+  { id: 'deleted',      label: 'Deleted'      },
+  { id: 'foreign',      label: 'Foreign'      },
+  { id: 'pwd_expiring', label: 'Pwd Expiring' },
 ]
 
 function filterUsers(users: AdUserRow[], tab: Tab): AdUserRow[] {
@@ -47,6 +89,15 @@ function filterUsers(users: AdUserRow[], tab: Tab): AdUserRow[] {
       return users.filter(u => !u.is_deleted && u.account_enabled === false)
     case 'deleted':
       return users.filter(u => u.is_deleted)
+    case 'foreign':
+      return users.filter(u => !u.is_deleted && u.is_foreign_signin === true)
+    case 'pwd_expiring': {
+      const thirtyDaysFromNow = Date.now() + THIRTY_DAYS_MS
+      return users.filter(u => {
+        if (!u.password_expires_at || u.is_deleted || !u.account_enabled) return false
+        return new Date(u.password_expires_at).getTime() < thirtyDaysFromNow
+      })
+    }
     default:
       return users
   }
@@ -99,9 +150,52 @@ function MfaBadge({ registered }: { registered: boolean | null }) {
   )
 }
 
+function PwdExpiresBadge({ iso }: { iso: string | null }) {
+  if (!iso) {
+    return <span style={{ color: '#22c55e', fontWeight: 600, fontSize: 12 }}>Never</span>
+  }
+  const days = daysUntilExpiry(iso)
+  if (days === null) return <span style={{ color: 'var(--text-dim)' }}>--</span>
+
+  if (days < 0) {
+    return (
+      <span style={{
+        color: '#ef4444', fontWeight: 600, fontSize: 12,
+        background: 'rgba(239,68,68,0.1)', padding: '1px 6px', borderRadius: 4,
+      }}>
+        Expired
+      </span>
+    )
+  }
+  if (days <= 7) {
+    return (
+      <span style={{
+        color: '#ef4444', fontWeight: 600, fontSize: 12,
+        background: 'rgba(239,68,68,0.1)', padding: '1px 6px', borderRadius: 4,
+      }}>
+        {fmtDateShort(iso)} ({days}d)
+      </span>
+    )
+  }
+  if (days <= 30) {
+    return (
+      <span style={{
+        color: '#eab308', fontWeight: 600, fontSize: 12,
+        background: 'rgba(234,179,8,0.1)', padding: '1px 6px', borderRadius: 4,
+      }}>
+        {fmtDateShort(iso)} ({days}d)
+      </span>
+    )
+  }
+  return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>{fmtDateShort(iso)}</span>
+}
+
 // ── Row style ─────────────────────────────────────────────────────────────────
 
 function rowBorderStyle(u: AdUserRow): React.CSSProperties {
+  if (u.is_foreign_signin && u.account_enabled === true) {
+    return { borderLeft: '3px solid #ef4444' }
+  }
   if (u.account_enabled === false && isRecentSignIn(u.last_sign_in)) {
     return { borderLeft: '3px solid #ef4444' }
   }
@@ -126,6 +220,48 @@ function SummaryCard({ label, value, color }: { label: string; value: number; co
         {value}
       </div>
     </div>
+  )
+}
+
+// ── Licence cell ──────────────────────────────────────────────────────────────
+
+function LicenseCell({ names }: { names: string | null }) {
+  if (!names) return <span style={{ color: 'var(--text-dim)', fontSize: 12 }}>—</span>
+
+  const parts = names.split(', ')
+  if (parts.length <= 1) {
+    return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>{names}</span>
+  }
+  // Truncate with tooltip showing all
+  return (
+    <span
+      title={names}
+      style={{ color: 'var(--text-muted)', fontSize: 12, cursor: 'default' }}
+    >
+      {parts[0]}
+      <span style={{ color: 'var(--text-dim)' }}> +{parts.length - 1}</span>
+    </span>
+  )
+}
+
+// ── Country cell ──────────────────────────────────────────────────────────────
+
+function CountryCell({ country, isForeign }: { country: string | null; isForeign: boolean }) {
+  if (!country) return <span style={{ color: 'var(--text-dim)', fontSize: 12 }}>—</span>
+
+  const flag = flagEmoji(country)
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: 4,
+      fontSize: 12, fontWeight: isForeign ? 600 : 400,
+      color: isForeign ? '#ef4444' : 'var(--text-muted)',
+      background: isForeign ? 'rgba(239,68,68,0.08)' : 'transparent',
+      padding: isForeign ? '1px 6px' : 0,
+      borderRadius: isForeign ? 4 : 0,
+    }}>
+      {flag && <span style={{ fontSize: 14 }}>{flag}</span>}
+      {country}
+    </span>
   )
 }
 
@@ -154,7 +290,7 @@ export default function ADMonitor() {
   const filtered = useMemo(() => filterUsers(users, tab), [users, tab])
 
   return (
-    <div style={{ padding: '28px 32px', maxWidth: 1300, margin: '0 auto' }}>
+    <div style={{ padding: '28px 32px', maxWidth: 1400, margin: '0 auto' }}>
 
       {/* Header */}
       <div style={{ marginBottom: 28 }}>
@@ -173,21 +309,23 @@ export default function ADMonitor() {
       {summary && (
         <div style={{
           display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))',
           gap: 16,
           marginBottom: 28,
         }}>
-          <SummaryCard label="Total"        value={summary.total}        color="var(--text-primary)" />
-          <SummaryCard label="Enabled"      value={summary.enabled}      color="#22c55e" />
-          <SummaryCard label="Disabled"     value={summary.disabled}     color={summary.disabled  > 0 ? '#ef4444' : 'var(--text-primary)'} />
-          <SummaryCard label="No MFA"       value={summary.no_mfa}       color={summary.no_mfa    > 0 ? '#eab308' : 'var(--text-primary)'} />
-          <SummaryCard label="Inactive 30d" value={summary.inactive_30d} color={summary.inactive_30d > 0 ? '#eab308' : 'var(--text-primary)'} />
-          <SummaryCard label="Deleted 7d"   value={summary.deleted_7d}   color={summary.deleted_7d > 0 ? '#ef4444' : 'var(--text-primary)'} />
+          <SummaryCard label="Total"           value={summary.total}                color="var(--text-primary)" />
+          <SummaryCard label="Enabled"         value={summary.enabled}              color="#22c55e" />
+          <SummaryCard label="Disabled"        value={summary.disabled}             color={summary.disabled             > 0 ? '#ef4444' : 'var(--text-primary)'} />
+          <SummaryCard label="No MFA"          value={summary.no_mfa}               color={summary.no_mfa               > 0 ? '#eab308' : 'var(--text-primary)'} />
+          <SummaryCard label="Inactive 30d"    value={summary.inactive_30d}         color={summary.inactive_30d         > 0 ? '#eab308' : 'var(--text-primary)'} />
+          <SummaryCard label="Deleted 7d"      value={summary.deleted_7d}           color={summary.deleted_7d           > 0 ? '#ef4444' : 'var(--text-primary)'} />
+          <SummaryCard label="Foreign Sign-ins" value={summary.foreign_signin_count} color={summary.foreign_signin_count > 0 ? '#ef4444' : 'var(--text-primary)'} />
+          <SummaryCard label="Expiring / 7d"   value={summary.expiring_soon_count}  color={summary.expiring_soon_count  > 0 ? '#eab308' : 'var(--text-primary)'} />
         </div>
       )}
 
       {/* Filter tabs */}
-      <div style={{ display: 'flex', gap: 4, marginBottom: 20 }}>
+      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 20 }}>
         {TABS.map(t => (
           <button
             key={t.id}
@@ -199,9 +337,9 @@ export default function ADMonitor() {
               fontWeight: 500,
               cursor: 'pointer',
               border: '1px solid',
-              borderColor:    tab === t.id ? 'var(--accent)'       : 'var(--border)',
+              borderColor:    tab === t.id ? 'var(--accent)'         : 'var(--border)',
               background:     tab === t.id ? 'rgba(99,102,241,0.15)' : 'transparent',
-              color:          tab === t.id ? 'var(--accent)'       : 'var(--text-muted)',
+              color:          tab === t.id ? 'var(--accent)'         : 'var(--text-muted)',
               transition:     'all 0.15s',
             }}
           >
@@ -231,11 +369,15 @@ export default function ADMonitor() {
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
               <thead>
                 <tr style={{ borderBottom: '1px solid var(--border)' }}>
-                  {['Display Name', 'UPN', 'Status', 'MFA', 'Last Sign-in', 'Created'].map(h => (
+                  {[
+                    'Display Name', 'UPN', 'Status', 'MFA',
+                    'License', 'Country', 'Pwd Expires', 'Department',
+                    'Last Sign-in', 'Created',
+                  ].map(h => (
                     <th
                       key={h}
                       style={{
-                        padding: '11px 16px',
+                        padding: '11px 14px',
                         textAlign: 'left',
                         fontWeight: 600,
                         fontSize: 11,
@@ -259,41 +401,80 @@ export default function ADMonitor() {
                       ...rowBorderStyle(u),
                     }}
                   >
+                    {/* Display Name */}
                     <td style={{
-                      padding: '11px 16px',
+                      padding: '11px 14px',
                       fontWeight: 600,
                       color: 'var(--text-primary)',
                       whiteSpace: 'nowrap',
                     }}>
                       {u.display_name ?? <span style={{ color: 'var(--text-dim)' }}>—</span>}
                     </td>
+
+                    {/* UPN */}
                     <td style={{
-                      padding: '11px 16px',
+                      padding: '11px 14px',
                       color: 'var(--text-muted)',
                       fontSize: 12,
-                      maxWidth: 260,
+                      maxWidth: 220,
                       overflow: 'hidden',
                       textOverflow: 'ellipsis',
                       whiteSpace: 'nowrap',
                     }}>
                       {u.upn ?? '--'}
                     </td>
-                    <td style={{ padding: '11px 16px', whiteSpace: 'nowrap' }}>
+
+                    {/* Status */}
+                    <td style={{ padding: '11px 14px', whiteSpace: 'nowrap' }}>
                       <StatusBadge enabled={u.is_deleted ? null : u.account_enabled} />
                     </td>
-                    <td style={{ padding: '11px 16px', textAlign: 'center' }}>
+
+                    {/* MFA */}
+                    <td style={{ padding: '11px 14px', textAlign: 'center' }}>
                       <MfaBadge registered={u.is_deleted ? null : u.mfa_registered} />
                     </td>
+
+                    {/* License */}
+                    <td style={{ padding: '11px 14px', maxWidth: 180 }}>
+                      <LicenseCell names={u.license_names} />
+                    </td>
+
+                    {/* Country */}
+                    <td style={{ padding: '11px 14px', whiteSpace: 'nowrap' }}>
+                      <CountryCell country={u.sign_in_country} isForeign={u.is_foreign_signin} />
+                    </td>
+
+                    {/* Password Expires */}
+                    <td style={{ padding: '11px 14px', whiteSpace: 'nowrap' }}>
+                      <PwdExpiresBadge iso={u.password_expires_at} />
+                    </td>
+
+                    {/* Department */}
                     <td style={{
-                      padding: '11px 16px',
+                      padding: '11px 14px',
+                      color: 'var(--text-muted)',
+                      fontSize: 12,
+                      maxWidth: 160,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}>
+                      {u.department ?? <span style={{ color: 'var(--text-dim)' }}>—</span>}
+                    </td>
+
+                    {/* Last Sign-in */}
+                    <td style={{
+                      padding: '11px 14px',
                       color: 'var(--text-muted)',
                       fontSize: 12,
                       whiteSpace: 'nowrap',
                     }}>
                       {fmtDate(u.last_sign_in)}
                     </td>
+
+                    {/* Created */}
                     <td style={{
-                      padding: '11px 16px',
+                      padding: '11px 14px',
                       color: 'var(--text-dim)',
                       fontSize: 12,
                       whiteSpace: 'nowrap',

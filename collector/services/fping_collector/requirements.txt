@@ -1,1 +1,2 @@
-supabase==2.15.1
+# No external dependencies — stdlib only (subprocess, re, threading, time, datetime)
+# buffer.py also uses stdlib only (sqlite3, urllib.request, json)

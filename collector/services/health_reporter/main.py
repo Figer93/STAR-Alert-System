@@ -4,16 +4,14 @@ REPORT_INTERVAL seconds, and checks whether each data source has written
 a row within the last 5 minutes.
 
 Source liveness checks:
-  goflow2   → latest row in network_flows
-  telegraf  → latest row in switch_port_metrics
-  fping     → latest row in latency_metrics
+  goflow2   → latest row in local buffer for /api/collector/metrics/flows
+  telegraf  → latest row in local buffer for /api/collector/metrics/ports
+  fping     → latest row in local buffer for /api/collector/metrics/latency
 
 If any source has been silent for more than SILENCE_THRESHOLD_SECONDS,
-a warning is logged (future: raise an alert via the main STAR backend).
+a warning is logged.
 
-Heartbeat is sent to BOTH:
-  1. Supabase directly via supabase-py (kept as fallback)
-  2. Railway backend POST /api/collector/heartbeat
+Heartbeat is sent to Railway backend POST /api/collector/heartbeat.
 """
 
 import sys
@@ -22,12 +20,11 @@ sys.path.insert(0, '/app')
 import json
 import logging
 import os
+import sqlite3
 import time
-import urllib.request
-import urllib.error
 from datetime import datetime, timedelta, timezone
 
-from supabase import create_client, Client
+import requests
 
 logging.basicConfig(
     level=logging.INFO,
@@ -37,60 +34,52 @@ log = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-SUPABASE_URL              = os.environ["SUPABASE_URL"]
-SUPABASE_KEY              = os.environ["SUPABASE_KEY"]
-BACKEND_URL               = os.environ.get("BACKEND_URL", "").strip()
+BACKEND_URL               = os.environ["BACKEND_URL"].strip()
 COLLECTOR_ID              = os.environ.get("COLLECTOR_ID", "office-main")
 REPORT_INTERVAL           = int(os.environ.get("REPORT_INTERVAL", "60"))
 SILENCE_THRESHOLD_SECONDS = 300   # 5 minutes
+BUFFER_DB_PATH            = os.environ.get("BUFFER_DB_PATH", "/data/buffer.db")
 
-# Map source name → table to query for its latest row.
-_SOURCE_TABLES = {
-    "goflow2":  "network_flows",
-    "telegraf": "switch_port_metrics",
-    "fping":    "latency_metrics",
+# Map source name → buffer endpoint written by each collector service.
+_SOURCE_ENDPOINTS = {
+    "fping":    "/api/collector/metrics/latency",
+    "goflow2":  "/api/collector/metrics/flows",
+    "telegraf": "/api/collector/metrics/ports",
 }
 
 
-def _latest_row_time(client: Client, table: str) -> datetime | None:
-    """Return the `time` of the most recent row in the given table, or None."""
+def _latest_buffer_time(endpoint: str) -> datetime | None:
+    """Return the created_at of the most recent buffer row for the given endpoint."""
     try:
-        resp = (
-            client.table(table)
-            .select("time")
-            .order("time", desc=True)
-            .limit(1)
-            .execute()
-        )
-        if resp.data:
-            raw = resp.data[0]["time"]
-            # Supabase returns ISO-8601 strings; parse to aware datetime.
-            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt
+        conn = sqlite3.connect(BUFFER_DB_PATH, check_same_thread=False)
+        row = conn.execute(
+            "SELECT created_at FROM pending_metrics WHERE endpoint = ? "
+            "ORDER BY created_at DESC LIMIT 1",
+            (endpoint,),
+        ).fetchone()
+        conn.close()
+        if row:
+            return datetime.fromtimestamp(row[0], tz=timezone.utc)
     except Exception as exc:
-        log.warning("Could not query %s: %s", table, exc)
+        log.warning("Could not query buffer for %s: %s", endpoint, exc)
     return None
 
 
-def _check_sources(client: Client) -> dict[str, bool]:
+def _check_sources() -> dict[str, bool]:
     """
-    Check each source's last write timestamp.
+    Check each source's last write timestamp in the local SQLite buffer.
     Returns {source: True} if the source wrote within the threshold.
     Logs a WARNING for any silent source.
     """
-    now     = datetime.now(timezone.utc)
-    cutoff  = now - timedelta(seconds=SILENCE_THRESHOLD_SECONDS)
+    now    = datetime.now(timezone.utc)
+    cutoff = now - timedelta(seconds=SILENCE_THRESHOLD_SECONDS)
     statuses: dict[str, bool] = {}
 
-    for source, table in _SOURCE_TABLES.items():
-        last = _latest_row_time(client, table)
+    for source, endpoint in _SOURCE_ENDPOINTS.items():
+        last = _latest_buffer_time(endpoint)
         if last is None:
             active = False
-            log.warning(
-                "SOURCE SILENT: %s — no rows found in %s", source, table
-            )
+            log.warning("SOURCE SILENT: %s — no rows found in buffer", source)
         elif last < cutoff:
             active = False
             lag = int((now - last).total_seconds())
@@ -107,75 +96,40 @@ def _check_sources(client: Client) -> dict[str, bool]:
     return statuses
 
 
-def _write_heartbeat_supabase(client: Client, sources: dict[str, bool]) -> None:
-    """Write heartbeat directly to Supabase (kept as fallback)."""
-    now = datetime.now(timezone.utc).isoformat()
-    row = {
-        "collector_id": COLLECTOR_ID,
-        "last_seen":    now,
-        "version":      "0.1.0",
-        "sources":      json.dumps(sources),
-    }
-    try:
-        # Upsert on primary key (collector_id) so there is always exactly
-        # one row per collector instance, not a growing history.
-        client.table("collector_heartbeat").upsert(row).execute()
-        log.info(
-            "Heartbeat written to Supabase — collector=%s sources=%s",
-            COLLECTOR_ID,
-            {k: ("ok" if v else "SILENT") for k, v in sources.items()},
-        )
-    except Exception as exc:
-        log.error("Failed to write heartbeat to Supabase: %s", exc)
-
-
-def _post_heartbeat_backend(sources: dict[str, bool]) -> None:
+def _post_heartbeat(sources: dict[str, bool]) -> None:
     """POST heartbeat to Railway backend /api/collector/heartbeat."""
-    if not BACKEND_URL:
-        return
-
-    now = datetime.now(timezone.utc).isoformat()
+    url = f"{BACKEND_URL.rstrip('/')}/api/collector/heartbeat"
     payload = {
         "collector_id": COLLECTOR_ID,
-        "last_seen":    now,
+        "last_seen":    datetime.now(timezone.utc).isoformat(),
         "version":      "0.1.0",
         "sources":      sources,
     }
-    body = json.dumps(payload).encode("utf-8")
-    url  = f"{BACKEND_URL.rstrip('/')}/api/collector/heartbeat"
-    req  = urllib.request.Request(
-        url,
-        data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            if resp.status == 200:
-                log.debug("Heartbeat posted to backend OK")
-            else:
-                log.warning(
-                    "Backend heartbeat returned HTTP %d", resp.status
-                )
-    except urllib.error.URLError as exc:
-        log.warning("Could not post heartbeat to backend: %s", exc.reason)
-    except Exception as exc:
-        log.error("Unexpected error posting heartbeat to backend: %s", exc)
+        resp = requests.post(url, json=payload, timeout=10)
+        if resp.ok:
+            log.info(
+                "Heartbeat posted — collector=%s sources=%s",
+                COLLECTOR_ID,
+                {k: ("ok" if v else "SILENT") for k, v in sources.items()},
+            )
+        else:
+            log.warning("Backend heartbeat returned HTTP %d: %s", resp.status_code, resp.text)
+    except requests.exceptions.RequestException as exc:
+        log.warning("Could not post heartbeat to backend: %s", exc)
 
 
 def main() -> None:
     log.info(
-        "health_reporter starting — collector_id=%s interval=%ds",
-        COLLECTOR_ID, REPORT_INTERVAL,
+        "health_reporter starting — collector_id=%s interval=%ds backend=%s",
+        COLLECTOR_ID, REPORT_INTERVAL, BACKEND_URL,
     )
-    client: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
     while True:
         start = time.monotonic()
 
-        sources = _check_sources(client)
-        _write_heartbeat_supabase(client, sources)
-        _post_heartbeat_backend(sources)
+        sources = _check_sources()
+        _post_heartbeat(sources)
 
         elapsed   = time.monotonic() - start
         sleep_for = max(0.0, REPORT_INTERVAL - elapsed)

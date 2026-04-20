@@ -277,25 +277,33 @@ export const getRailwayStatus = () =>
 // ── Azure AD ──────────────────────────────────────────────────────────────────
 
 export interface AdUserRow {
-  id:               number
-  azure_id:         string
-  display_name:     string | null
-  upn:              string | null
-  account_enabled:  boolean | null
-  mfa_registered:   boolean | null
-  last_sign_in:     string | null
-  created_at_azure: string | null
-  is_deleted:       boolean
-  updated_at:       string | null
+  id:                  number
+  azure_id:            string
+  display_name:        string | null
+  upn:                 string | null
+  account_enabled:     boolean | null
+  mfa_registered:      boolean | null
+  last_sign_in:        string | null
+  created_at_azure:    string | null
+  is_deleted:          boolean
+  updated_at:          string | null
+  department:          string | null
+  license_names:       string | null
+  password_expires_at: string | null
+  sign_in_country:     string | null
+  is_foreign_signin:   boolean
+  manager_name:        string | null
 }
 
 export interface AdSummary {
-  total:        number
-  enabled:      number
-  disabled:     number
-  no_mfa:       number
-  inactive_30d: number
-  deleted_7d:   number
+  total:                number
+  enabled:              number
+  disabled:             number
+  no_mfa:               number
+  inactive_30d:         number
+  deleted_7d:           number
+  foreign_signin_count: number
+  expiring_soon_count:  number
 }
 
 export interface AdUserFilters {

@@ -42,6 +42,24 @@ _GRAPH_BASE          = "https://graph.microsoft.com/v1.0"
 _TOKEN_URL_TEMPLATE  = "https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
 _INTERVAL            = 900  # 15 minutes
 
+# ── License SKU mapping ───────────────────────────────────────────────────────
+
+LICENSE_SKUS: dict[str, str] = {
+    "6fd2c87f-b296-42f0-b197-1e91e994b900": "Microsoft 365 E3",
+    "05e9a617-0261-4cee-bb44-138d3ef5d965": "Microsoft 365 E3",
+    "18181a46-0d4e-45cd-891e-60aabd171b4e": "Office 365 E1",
+    "6634e0ce-1a9f-428c-a498-f84ec7b8aa2e": "Microsoft 365 F3",
+    "4b9405b0-7788-4568-add1-99614e613b69": "Exchange Online Plan 1",
+    "19ec0d23-8335-4cbd-94ac-6050e30712fa": "Exchange Online Plan 2",
+    "57ff2da0-773e-42df-b2af-ffb7a2317929": "Microsoft Teams",
+    "710779e8-3d4a-4c88-adb9-386c958d1fdf": "Microsoft Teams Exploratory",
+    "06ebc4ee-1bb5-47dd-8120-11324bc54e06": "Microsoft 365 Business Standard",
+    "cbdc14ab-d96c-4c30-b9f4-6ada7cdc1d46": "Microsoft 365 Business Premium",
+}
+
+# Country values considered domestic (not foreign)
+_UK_COUNTRIES: frozenset[str] = frozenset({"gb", "united kingdom", "uk"})
+
 
 # ── Token cache ───────────────────────────────────────────────────────────────
 
@@ -293,7 +311,9 @@ async def _sync_once() -> None:
     users = await _graph_get_all(
         token,
         f"{_GRAPH_BASE}/users"
-        "?$select=id,displayName,userPrincipalName,accountEnabled,createdDateTime"
+        "?$select=id,displayName,userPrincipalName,accountEnabled,createdDateTime,"
+        "department,jobTitle,city,country,passwordPolicies,lastPasswordChangeDateTime,assignedLicenses"
+        "&$expand=manager($select=displayName)"
         "&$top=999",
     )
     logger.info("Azure AD: fetched %d active users", len(users))
@@ -347,32 +367,73 @@ async def _sync_once() -> None:
                     last_sign_in = _parse_dt(sign_in_raw)
                     created_at   = _parse_dt(user.get("createdDateTime"))
 
+                    # ── New fields ────────────────────────────────────────────
+                    department = user.get("department") or None
+
+                    assigned_licenses = user.get("assignedLicenses") or []
+                    sku_ids = [lic.get("skuId", "") for lic in assigned_licenses if lic.get("skuId")]
+                    friendly_names = [LICENSE_SKUS.get(s, s) for s in sku_ids]
+                    license_names  = ", ".join(friendly_names) if friendly_names else None
+
+                    pwd_policies = user.get("passwordPolicies") or ""
+                    last_pwd_dt  = _parse_dt(user.get("lastPasswordChangeDateTime"))
+                    if "DisablePasswordExpiration" in pwd_policies:
+                        password_expires_at: datetime | None = None
+                    elif last_pwd_dt:
+                        password_expires_at = last_pwd_dt + timedelta(days=90)
+                    else:
+                        password_expires_at = None
+
+                    country         = user.get("country") or None
+                    sign_in_country = country
+                    is_foreign      = bool(
+                        country and country.strip().lower() not in _UK_COUNTRIES
+                    )
+
+                    manager_name = (user.get("manager") or {}).get("displayName") or None
+
                     await session.execute(
                         text("""
                             INSERT INTO ad_user_status
                                 (azure_id, display_name, upn, account_enabled, mfa_registered,
-                                 last_sign_in, created_at_azure, is_deleted, updated_at)
+                                 last_sign_in, created_at_azure, is_deleted, updated_at,
+                                 department, license_names, password_expires_at,
+                                 sign_in_country, is_foreign_signin, manager_name)
                             VALUES
                                 (:azure_id, :display_name, :upn, :account_enabled, :mfa_registered,
-                                 :last_sign_in, :created_at_azure, FALSE, NOW())
+                                 :last_sign_in, :created_at_azure, FALSE, NOW(),
+                                 :department, :license_names, :password_expires_at,
+                                 :sign_in_country, :is_foreign_signin, :manager_name)
                             ON CONFLICT (azure_id) DO UPDATE SET
-                                display_name     = EXCLUDED.display_name,
-                                upn              = EXCLUDED.upn,
-                                account_enabled  = EXCLUDED.account_enabled,
-                                mfa_registered   = COALESCE(EXCLUDED.mfa_registered, ad_user_status.mfa_registered),
-                                last_sign_in     = COALESCE(EXCLUDED.last_sign_in, ad_user_status.last_sign_in),
-                                created_at_azure = COALESCE(EXCLUDED.created_at_azure, ad_user_status.created_at_azure),
-                                is_deleted       = FALSE,
-                                updated_at       = NOW()
+                                display_name        = EXCLUDED.display_name,
+                                upn                 = EXCLUDED.upn,
+                                account_enabled     = EXCLUDED.account_enabled,
+                                mfa_registered      = COALESCE(EXCLUDED.mfa_registered, ad_user_status.mfa_registered),
+                                last_sign_in        = COALESCE(EXCLUDED.last_sign_in, ad_user_status.last_sign_in),
+                                created_at_azure    = COALESCE(EXCLUDED.created_at_azure, ad_user_status.created_at_azure),
+                                is_deleted          = FALSE,
+                                updated_at          = NOW(),
+                                department          = EXCLUDED.department,
+                                license_names       = EXCLUDED.license_names,
+                                password_expires_at = EXCLUDED.password_expires_at,
+                                sign_in_country     = EXCLUDED.sign_in_country,
+                                is_foreign_signin   = EXCLUDED.is_foreign_signin,
+                                manager_name        = EXCLUDED.manager_name
                         """),
                         {
-                            "azure_id":         azure_id,
-                            "display_name":     user.get("displayName"),
-                            "upn":              upn,
-                            "account_enabled":  user.get("accountEnabled"),
-                            "mfa_registered":   mfa_reg,
-                            "last_sign_in":     last_sign_in,
-                            "created_at_azure": created_at,
+                            "azure_id":            azure_id,
+                            "display_name":        user.get("displayName"),
+                            "upn":                 upn,
+                            "account_enabled":     user.get("accountEnabled"),
+                            "mfa_registered":      mfa_reg,
+                            "last_sign_in":        last_sign_in,
+                            "created_at_azure":    created_at,
+                            "department":          department,
+                            "license_names":       license_names,
+                            "password_expires_at": password_expires_at,
+                            "sign_in_country":     sign_in_country,
+                            "is_foreign_signin":   is_foreign,
+                            "manager_name":        manager_name,
                         },
                     )
                     upserted += 1
@@ -439,7 +500,8 @@ async def _sync_once() -> None:
     async with AsyncSession(engine) as session:
         rows_result = await session.execute(text("""
             SELECT azure_id, display_name, upn, account_enabled, mfa_registered,
-                   last_sign_in, created_at_azure
+                   last_sign_in, created_at_azure,
+                   sign_in_country, is_foreign_signin, password_expires_at
             FROM ad_user_status
             WHERE is_deleted = FALSE
         """))
@@ -517,6 +579,39 @@ async def _sync_once() -> None:
                     "ad_no_mfa",
                     azure_id,
                 ))
+
+        # Foreign sign-in (7-day dedup window)
+        sign_in_country = u.get("sign_in_country")
+        is_foreign      = u.get("is_foreign_signin")
+        if is_foreign and enabled is True and sign_in_country:
+            title = f"Foreign Sign-in: {display_name} — last seen in {sign_in_country}"
+            if title not in titles_7d:
+                pending.append((
+                    title,
+                    f"Account {upn} last sign-in location: {sign_in_country}.",
+                    "warning",
+                    "ad_foreign_signin",
+                    azure_id,
+                ))
+
+        # Password expiring within 7 days (24h dedup window)
+        pwd_expires = u.get("password_expires_at")
+        if pwd_expires and enabled is True:
+            if pwd_expires.tzinfo is None:
+                pwd_expires = pwd_expires.replace(tzinfo=timezone.utc)
+            days_until = (pwd_expires - now).days
+            if 0 <= days_until <= 7:
+                exp_str = pwd_expires.strftime("%Y-%m-%d")
+                title   = f"Password Expiring: {display_name} — expires {exp_str}"
+                if not _skip(title, "warning"):
+                    pending.append((
+                        title,
+                        f"Account {upn} password expires on {exp_str} "
+                        f"({days_until} day{'s' if days_until != 1 else ''} remaining).",
+                        "warning",
+                        "ad_password_expiring",
+                        azure_id,
+                    ))
 
         # New account created in last 24h
         if created_at and created_at >= twenty_four_ago:

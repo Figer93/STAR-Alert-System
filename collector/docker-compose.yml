@@ -52,7 +52,7 @@ services:
     networks:
       - collector_net
 
-  # ── telegraf: ICMP ping → Supabase latency_metrics ────────────────────────
+  # ── telegraf: ICMP ping → collector buffer → Railway backend ──────────────
   # UniFi polling is handled by the unifi_poller service below.
   telegraf:
     image: telegraf:latest
@@ -60,8 +60,6 @@ services:
     cap_add:
       - NET_RAW
     environment:
-      SUPABASE_URL: ${SUPABASE_URL}
-      SUPABASE_KEY: ${SUPABASE_KEY}
       GATEWAY_IP: ${GATEWAY_IP}
     volumes:
       - ./telegraf/telegraf.conf:/etc/telegraf/telegraf.conf:ro
@@ -106,13 +104,11 @@ services:
       - collector_net
 
   # ── health_reporter: heartbeat + silent-source detection ───────────────────
-  # Writes heartbeat to Supabase directly (fallback) AND to Railway backend.
+  # Posts heartbeat to Railway backend /api/collector/heartbeat.
   health_reporter:
     build: ./services/health_reporter
     restart: unless-stopped
     environment:
-      SUPABASE_URL: ${SUPABASE_URL}
-      SUPABASE_KEY: ${SUPABASE_KEY}
       BACKEND_URL: ${BACKEND_URL}
       COLLECTOR_ID: ${COLLECTOR_ID:-office-main}
       REPORT_INTERVAL: "60"
