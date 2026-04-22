@@ -242,6 +242,8 @@ async def _sync_patch_status(
         if ts and (by_device[did]["last_ts"] is None or ts > by_device[did]["last_ts"]):
             by_device[did]["last_ts"] = ts
 
+    if patch_rows:
+        logger.debug("NinjaRMM: first raw patch record sample: %s", patch_rows[0])
     logger.info("NinjaRMM: aggregated patch data for %d devices", len(by_device))
 
     # ── Deduplicate by hostname ───────────────────────────────────────────────
@@ -586,9 +588,9 @@ async def _sync_once(client_id: str, client_secret: str) -> None:
                             """),
                             {"lr": last_reboot, "nid": ninja_id},
                         )
-        except Exception:
+        except Exception as exc:
             logger.debug("NinjaRMM: last_reboot update skipped (column may not exist yet): %s",
-                         repr(Exception))
+                         repr(exc))
 
     # ── Step 3: Software sync — each device in its own isolated session ───────
     for ninja_id, _ in matched:
