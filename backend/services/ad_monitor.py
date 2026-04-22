@@ -44,17 +44,16 @@ _INTERVAL            = 900  # 15 minutes
 
 # ── License SKU mapping ───────────────────────────────────────────────────────
 
-LICENSE_SKUS: dict[str, str] = {
-    "6fd2c87f-b296-42f0-b197-1e91e994b900": "Microsoft 365 E3",
-    "05e9a617-0261-4cee-bb44-138d3ef5d965": "Microsoft 365 E3",
+SKU_NAMES: dict[str, str] = {
+    "3b555118-da6a-4418-894f-7df1e2096870": "Microsoft 365 Business Basic",
+    "f30db892-07e9-47e9-837c-80727f46fd3d": "Microsoft 365 Business Standard",
+    "3ab6abff-666f-4424-bfb7-f0bc274ec7bc": "Microsoft 365 Business Premium",
+    "9f3d9c1d-25a5-4aaa-8e59-23a1e6450a67": "Microsoft 365 E3",
+    "6fd2c87f-b296-42f0-b197-1e91e994b900": "Office 365 E3",
     "18181a46-0d4e-45cd-891e-60aabd171b4e": "Office 365 E1",
-    "6634e0ce-1a9f-428c-a498-f84ec7b8aa2e": "Microsoft 365 F3",
-    "4b9405b0-7788-4568-add1-99614e613b69": "Exchange Online Plan 1",
-    "19ec0d23-8335-4cbd-94ac-6050e30712fa": "Exchange Online Plan 2",
-    "57ff2da0-773e-42df-b2af-ffb7a2317929": "Microsoft Teams",
-    "710779e8-3d4a-4c88-adb9-386c958d1fdf": "Microsoft Teams Exploratory",
-    "06ebc4ee-1bb5-47dd-8120-11324bc54e06": "Microsoft 365 Business Standard",
-    "cbdc14ab-d96c-4c30-b9f4-6ada7cdc1d46": "Microsoft 365 Business Premium",
+    "4b585984-651b-448a-9e53-3b10f069cf7f": "Office 365 F3",
+    "exchangestandard":  "Exchange Online Plan 1",
+    "exchangeenterprise": "Exchange Online Plan 2",
 }
 
 # Country values considered domestic (not foreign)
@@ -372,7 +371,7 @@ async def _sync_once() -> None:
 
                     assigned_licenses = user.get("assignedLicenses") or []
                     sku_ids = [lic.get("skuId", "") for lic in assigned_licenses if lic.get("skuId")]
-                    friendly_names = [LICENSE_SKUS.get(s, s) for s in sku_ids]
+                    friendly_names = [SKU_NAMES.get(s, s) for s in sku_ids]
                     license_names  = ", ".join(friendly_names) if friendly_names else None
 
                     pwd_policies = user.get("passwordPolicies") or ""
