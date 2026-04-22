@@ -2,7 +2,12 @@ import axios, { type AxiosError } from 'axios'
 import { toast } from 'sonner'
 import type { Alert, AlertsResponse, Source, StatsSummary, TimelineBucket, Rule } from '../types'
 
-const api = axios.create({ baseURL: '/api' })
+const api = axios.create({
+  baseURL: '/api',
+  headers: {
+    'X-API-Key': import.meta.env.VITE_API_SECRET_KEY ?? '',
+  },
+})
 
 // Response error interceptor — surfaces API errors as toasts
 api.interceptors.response.use(
@@ -265,6 +270,15 @@ export interface RailwayStatusData {
   deployment:  string
 }
 
+export interface SystemStatusData {
+  db_health: DbHealthData
+  collector: CollectorHeartbeatLatest
+  railway:   RailwayStatusData
+}
+
+export const getSystemStatus = () =>
+  api.get<SystemStatusData>('/system/status').then(r => r.data)
+
 export const getDbHealth = () =>
   api.get<DbHealthData>('/system/db-health').then(r => r.data)
 
@@ -290,7 +304,7 @@ export interface AdUserRow {
   department:          string | null
   license_names:       string | null
   password_expires_at: string | null
-  sign_in_country:     string | null
+  profile_country:     string | null
   is_foreign_signin:   boolean
   manager_name:        string | null
 }

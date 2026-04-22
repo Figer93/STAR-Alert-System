@@ -45,7 +45,7 @@ class AdUserRow(BaseModel):
     department:          Optional[str] = None
     license_names:       Optional[str] = None
     password_expires_at: Optional[str] = None
-    sign_in_country:     Optional[str] = None
+    profile_country:     Optional[str] = None
     is_foreign_signin:   bool = False
     manager_name:        Optional[str] = None
 
@@ -109,7 +109,7 @@ async def get_ad_users(
             department          = r.get("department"),
             license_names       = r.get("license_names"),
             password_expires_at = _iso(r.get("password_expires_at")),
-            sign_in_country     = r.get("sign_in_country"),
+            profile_country     = r.get("sign_in_country"),
             is_foreign_signin   = bool(r.get("is_foreign_signin", False)),
             manager_name        = r.get("manager_name"),
         )

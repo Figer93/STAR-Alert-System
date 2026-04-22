@@ -1,63 +1,104 @@
-# STAR Alert System — Fix Plan Progress
+# STAR Alert System — Progress Log
 
-## Phase 0 — Collector Local Buffer ✅
-- [x] **0A** — `collector/buffer.py` — SQLite buffer, write_local, flush_to_backend, 24h retention, 50k row cap
-- [x] **0B** — Collector push flow: all services write via buffer, not Supabase directly
-- [x] **0C** — Backfill on reconnect: gap logging, original timestamps preserved
-- [x] **0D** — fping scope reduced to LAN only (10.2.1.253, 10.2.1.5, 10.2.1.3, 10.2.2.100)
-- [x] Docker compose: `buffer_data` volume, `BACKEND_URL` env var, `buffer.py` bind mount
-- [x] Backend: `POST /api/collector/metrics/latency|ports|devices|flows` + `/heartbeat`
+## Last Session (22 April 2026) — AD Monitor country/foreign-signin fix
 
-## Phase 1 — Port Metrics Data Integrity ✅
-- [x] **1A** — Migration `0012`: add `rx_errors_delta`, `tx_errors_delta`, `rx_bytes_delta`, `tx_bytes_delta`, `is_counter_reset` to `switch_port_metrics`
-- [x] **1A** — Delta calculation in `unifi_poller`: prev readings tracked, counter reset detection, 10 GB sanity discard, clock-skew guard
-- [x] **1A** — `collector.py` `/metrics/ports` INSERT includes 5 delta columns
-- [x] **1B** — All 11 display queries in `network.py` use `_delta` columns (overview, get_ports, top_devices, investigate)
+**What was changed:**
+- Renamed `sign_in_country` API field → `profile_country` (DB column unchanged, mapped in router)
+- Set `is_foreign_signin = False` unconditionally in `ad_monitor.py` with comment pointing to the real implementation path (`/auditLogs/signIns`)
+- Removed false-positive foreign sign-in detection that read the user profile `country` attribute
+- Updated AD Monitor table column label from "Country" to "Profile Country"
+- "Foreign Sign-ins" summary card now always shows 0 (data-correct, not suppressed)
 
-## Phase 2 — Incident Logic Overhaul ✅
-- [x] **2A** — Migration `0013`: add `incident_scope` (global/device) + `affected_component` to `network_incidents`
-- [x] **2B** — Global vs device incident rules: `_GLOBAL_ROOT_CAUSES`, `_get_open_global_incident` dedup, `incident_scope` on all `_create_incident` calls
-- [x] **2C** — Packet loss threshold: >50% per-target for 3 consecutive cycles; `_check_wan_loss` rewritten with `_wan_loss_consecutive`/`_wan_loss_recover`
-- [x] **2D** — Resolve endpoint exists (POST); `resolveIncident` added to `lib/api.ts`; Incidents.tsx uses `api.ts` instead of raw `fetch()`
-- [x] **2E** — Auto-resolve global latency incidents after `_GLOBAL_RECOVER_THRESHOLD` (3) consecutive clean cycles; WAN outage resolves after 3 clean cycles per target; single Telegram on resolve
+**Why it was changed:**
+- `sign_in_country` was populated from the Azure AD profile `country` field, which is a free-text directory attribute unrelated to sign-in location
+- 3 users (2017 accounts, expired passwords, no recent logins) had garbage in their `country` field ("Skype", "Clive.Hawes") — these were flagged as foreign sign-ins
+- These are not a security risk; the dirty data is a legacy data-entry error
+- Real geographic sign-in detection requires querying `/auditLogs/signIns` (needs `AuditLog.Read.All` + separate paginated endpoint), which is not implemented
 
-## Phase 3 — Timeline & Error History ⬜
-- [ ] **3A** — Migration `0014`: create `port_error_events` table
-- [ ] **3B** — Populate `port_error_events` from unifi_poller when rx/tx_errors_delta > 0
-- [ ] **3C** — Populate `network_events` for timeline (port errors, device online/offline, latency spikes, incidents)
-- [ ] **3D** — `last_error_at` per device — updated when errors detected, shown in Ports table
+**Files modified:**
+- `backend/services/ad_monitor.py` — profile_country local var, is_foreign_signin = False
+- `backend/routers/ad.py` — Pydantic field rename, router mapping
+- `frontend/src/lib/api.ts` — AdUserRow interface field rename
+- `frontend/src/pages/network/ADMonitor.tsx` — column header + field reference
 
-## Phase 4 — Investigation Page Accuracy ⬜
-- [ ] **4A** — Bytes sent/received use delta columns in investigate endpoint
-- [ ] **4B** — Remove per-device WAN/gateway loss; replace with global incident count for window
-- [ ] **4C** — Diagnosis panel split: global outage banner (amber) + device-specific section
-- [ ] **4D** — Past device incidents query (scope='device') + overlapping global incidents
-- [ ] **4E** — Timeline events from `network_events` table
+**Known issues introduced:**
+- None
 
-## Phase 5 — UI Data Confidence ⬜
-- [ ] **5A** — Data freshness indicator: "Last updated Xs ago", amber/red banner if collector offline
-- [ ] **5B** — Error count display: errors/hr from delta, tooltip with cumulative, color coding
-- [ ] **5C** — Global outage banner on all network pages (dismissible per session)
-- [ ] **5D** — Incident resolve button: outline style, confirmation, moves to Resolved tab
-- [ ] **5E** — Investigation page: show "No data available" instead of 0 values
-
-## Phase 6 — CLAUDE.md Update ⬜
-- [ ] Add data integrity rules (always use _delta, timestamp rejection, counter reset)
-- [ ] Add incident rules (global vs device scope, dedup, thresholds)
-- [ ] Add collector architecture rules (LAN only, buffer-first, flush every 60s)
-- [ ] Add UI rules (no per-device WAN diagnosis, freshness indicator, errors/hr)
+**What to do next:**
+- Deploy and verify "Foreign Sign-ins" card shows 0 and "Foreign" tab shows empty
+- Optionally: implement real foreign sign-in via `/auditLogs/signIns` if needed
 
 ---
 
-## Execution Order
-Phases must be executed sequentially. Each phase must deploy and verify before starting the next.
+## Last Session (22 April 2026)
 
-| Phase | Agent | Status |
-|---|---|---|
-| 0 — Collector buffer | infra | ✅ Done |
-| 1 — Data integrity | backend | ✅ Done |
-| 2 — Incident logic | backend | ✅ Done |
-| 3 — Timeline/history | backend | ⬜ Pending |
-| 4 — Investigation | backend + frontend | ⬜ Pending |
-| 5 — UI confidence | frontend | ⬜ Pending |
-| 6 — CLAUDE.md | any | ⬜ Pending |
+**What was changed:**
+- Added `DEBUG` log to `ninja_sync.py` to print first raw patch record from NinjaRMM API
+- Fixed `repr(Exception)` → `repr(exc)` in `last_reboot` error handler (pre-existing bug)
+- Investigated why `patches_failed`/`patches_pending` show 0 for all 14 devices in DB
+
+**Why it was changed:**
+- Patch compliance summary cards show 0 despite rows existing in `device_patch_status`
+- Root cause not yet confirmed — debug log added to inspect raw NinjaRMM API response
+
+**Findings:**
+- Patch data source: `GET /v2/queries/os-patches` (paginated cursor, 1000 rows/page)
+- Each record = one patch on one device; aggregated in Python by `deviceId`
+- `patches_approved` counts status `APPROVED` or `INSTALLED`; `PENDING*` → pending; `FAILED` → failed; `NOT_APPROVED` silently dropped
+- `reboot_required` comes from `devices-detailed` endpoint, not the patches endpoint
+- Summary stats are frontend `reduce()` over the row array — no separate DB aggregate query
+- Field names match exactly between API, Pydantic model, and frontend TypeScript interface
+
+**Files modified:**
+- `backend/services/ninja_sync.py` — debug log + repr fix (commit `1ae4cec`)
+
+**Known issues introduced:**
+- None — log line only, no logic changed
+
+**What to do next:**
+- Check Railway logs after deploy for `NinjaRMM: first raw patch record sample:` line
+- Confirm what `status` values NinjaRMM is actually returning (may not match expected enum)
+- Confirm `deviceId` field is present in patch records (fallback: `device_id`)
+- Remove debug log once root cause confirmed
+
+---
+
+## Pending Issues
+
+| Severity | Issue | File(s) | Notes |
+|----------|-------|---------|-------|
+| Low | `health_reporter` reports `telegraf` as SILENT | collector/services/health_reporter/main.py | Cosmetic — telegraf is disabled |
+| Low | `network.py` docstring says "TimescaleDB" | backend/routers/network.py | Stale comment — no functional impact |
+| Medium | NetFlow/Traffic page shows no data | N/A | goflow2 disabled, needs pfSense config |
+| Low | Migration 0025 not committed | migrations/versions/0025_*.py | Check if already applied to Railway |
+
+---
+
+## Recent Decisions
+
+| Date | Decision | Rationale |
+|------|----------|-----------|
+| 22 Apr 2026 | Configuration overhaul | Context loss between sessions was causing repeated mistakes |
+| 21 Apr 2026 | Alembic stamped 0015→0025 | Manual DB objects now under migration control |
+| 21 Apr 2026 | latency_metrics retention = 7 days | Single cleanup job in network_monitor, removed conflict with main.py |
+| 20 Apr 2026 | goflow2 + telegraf disabled | Crash loops, not configured — fping_collector supersedes telegraf |
+| 20 Apr 2026 | Polling intervals 10s→60s | Reduced API load, frontend feels less janky |
+| 20 Apr 2026 | Port metrics batched (260→1 POST) | Eliminated 260 individual POSTs per cycle |
+| 19 Apr 2026 | SFP+ section added to Ports page | 10G ports need visual distinction from 1G |
+| 19 Apr 2026 | Auth middleware added | verify_api_key + verify_collector_key on all routes |
+| 19 Apr 2026 | TimescaleDB confirmed NOT installed | time_bucket() forbidden — use date_trunc() |
+| 18 Apr 2026 | Dark theme only | No light theme support, CSS vars only |
+
+---
+
+## Fix Plan Status
+
+| Phase | Description | Status |
+|-------|-------------|--------|
+| 0 | Collector Local Buffer | Done |
+| 1 | Port Metrics Data Integrity | Done |
+| 2 | Incident Logic Overhaul | Done |
+| 3 | Timeline & Error History | Pending |
+| 4 | Investigation Page Accuracy | Pending |
+| 5 | UI Data Confidence | Pending |
+| 6 | CLAUDE.md Update | Partially done (merged with this overhaul) |

@@ -371,7 +371,7 @@ export default function ADMonitor() {
                 <tr style={{ borderBottom: '1px solid var(--border)' }}>
                   {[
                     'Display Name', 'UPN', 'Status', 'MFA',
-                    'License', 'Country', 'Pwd Expires', 'Department',
+                    'License', 'Profile Country', 'Pwd Expires', 'Department',
                     'Last Sign-in', 'Created',
                   ].map(h => (
                     <th
@@ -441,7 +441,7 @@ export default function ADMonitor() {
 
                     {/* Country */}
                     <td style={{ padding: '11px 14px', whiteSpace: 'nowrap' }}>
-                      <CountryCell country={u.sign_in_country} isForeign={u.is_foreign_signin} />
+                      <CountryCell country={u.profile_country} isForeign={u.is_foreign_signin} />
                     </td>
 
                     {/* Password Expires */}

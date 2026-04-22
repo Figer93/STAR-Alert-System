@@ -384,11 +384,9 @@ async def _sync_once() -> None:
                     else:
                         password_expires_at = None
 
-                    country         = user.get("country") or None
-                    sign_in_country = country
-                    is_foreign      = bool(
-                        country and country.strip().lower() not in _UK_COUNTRIES
-                    )
+                    profile_country = user.get("country") or None
+                    # Real foreign sign-in detection requires /auditLogs/signIns with AuditLog.Read.All permission
+                    is_foreign_signin = False
 
                     manager_name = (user.get("manager") or {}).get("displayName") or None
 
@@ -431,8 +429,8 @@ async def _sync_once() -> None:
                             "department":          department,
                             "license_names":       license_names,
                             "password_expires_at": password_expires_at,
-                            "sign_in_country":     sign_in_country,
-                            "is_foreign_signin":   is_foreign,
+                            "sign_in_country":     profile_country,
+                            "is_foreign_signin":   is_foreign_signin,
                             "manager_name":        manager_name,
                         },
                     )
