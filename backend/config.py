@@ -50,6 +50,12 @@ class Settings(BaseSettings):
     WAN1_GATEWAY_IP: str = ""  # primary WAN gateway (WANGW)
     WAN2_GATEWAY_IP: str = ""  # secondary WAN gateway (WAN2_GATEWAY)
 
+    # API authentication — both required; app refuses to start if not set.
+    # API_SECRET_KEY:    sent as X-API-Key header by the frontend and any API client.
+    # COLLECTOR_SECRET:  sent as X-Collector-Key header by the on-premise collector.
+    API_SECRET_KEY:   str  # no default — raises ValidationError on startup if missing
+    COLLECTOR_SECRET: str  # no default — raises ValidationError on startup if missing
+
     # UniFi Cloud API (api.ui.com)
     # Leave UNIFI_CLOUD_API_KEY blank to disable cloud polling.
     UNIFI_CLOUD_API_KEY: str = ""
