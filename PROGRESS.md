@@ -32,8 +32,18 @@
 **Known issues introduced:**
 - WAN targets showing loss will now generate both a `packet_loss` incident (immediate) AND a `wan_issue` incident (after 3 cycles). These are separate categories and serve different purposes; no dedup conflict.
 
+**Migration required (0028) — applied 2026-04-23:**
+- `migrations/versions/0028_add_packet_loss_category.py` — adds `packet_loss` to `incident_category_enum`
+- Without this migration, `_check_packet_loss` silently fails (enum validation error caught by `_exec`)
+- Applied to production; alembic_version is now `0028`
+
+**Deployment notes (2026-04-23):**
+- Git-triggered Railway build (`5cec2c3d`) got stuck in a RAILPACK Metal builder loop (Railway platform issue)
+- Resolved by running `railway up` directly (`mcp__railway__deploy`) → deployment `01188bb2` succeeded
+- Startup log confirmed: "8 checks registered" (was 7 — confirms `_check_packet_loss` is live)
+
 **What to do next:**
-- Deploy and verify that LAN packet loss events (e.g. 10.2.1.253) now appear in the incidents list
+- Monitor next real packet loss event — should now appear in GET /api/network/incidents with category=packet_loss
 - Verify correlation badges appear correctly in the Latency ANALYSIS panel during loss events
 
 ---
