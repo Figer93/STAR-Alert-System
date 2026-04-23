@@ -1,5 +1,43 @@
 # STAR Alert System — Progress Log
 
+## Last Session (23 April 2026) — Packet loss incidents + latency correlation analysis
+
+**What was changed:**
+- `backend/network_monitor.py`: Added `_check_packet_loss` function and registered it in `_CHECKS` (runs after `_check_wan_loss`)
+  - Covers ALL latency targets (LAN and WAN), not just external IPs
+  - No consecutive-cycle guard — creates a `packet_loss` incident on the first 5-minute window showing >10% average loss
+  - Severity: loss >50% → high, 10–50% → medium
+  - Auto-resolves when target drops below 10%
+  - Deduplicates via `_get_open_incident` + `_recently_resolved` (30-min re-open guard)
+- `frontend/src/pages/network/Latency.tsx`: Enhanced ANALYSIS panel with LAN/WAN correlation badges
+  - Added `correlation` field to `Interpretation` interface
+  - `interpret()` now accepts `targetTypes: Record<string, string>` from API response
+  - Replaces the old `isGateway` regex heuristic with proper `target_types` classification
+  - Shows one of four correlation badges depending on which targets are affected:
+    - Amber "Isolated — only {target} affected" (single target)
+    - Amber "LAN Issue — loss isolated to internal network"
+    - Red "WAN Issue — external connectivity affected"
+    - Red "Full Outage — all targets affected"
+  - Badge is rendered between the headline and bullet lines in the Analysis panel
+
+**Why it was changed:**
+- `_check_wan_loss` only fires on external/WAN targets after 3 consecutive cycles → LAN targets (e.g. 10.2.1.253 pfSense gateway) showing >50% loss never created an incident
+- The latency timeline showed outage segments (e.g. "DOWN — 10.2.1.253, Worst loss: 55.3%") that had no corresponding incident in the incidents list
+- The ANALYSIS panel used `isGateway` regex (matched "gateway"/"gw" in target name) rather than the real `target_types` from the API, giving incorrect LAN/WAN classification
+
+**Files modified:**
+- `backend/network_monitor.py`
+- `frontend/src/pages/network/Latency.tsx`
+
+**Known issues introduced:**
+- WAN targets showing loss will now generate both a `packet_loss` incident (immediate) AND a `wan_issue` incident (after 3 cycles). These are separate categories and serve different purposes; no dedup conflict.
+
+**What to do next:**
+- Deploy and verify that LAN packet loss events (e.g. 10.2.1.253) now appear in the incidents list
+- Verify correlation badges appear correctly in the Latency ANALYSIS panel during loss events
+
+---
+
 ## Last Session (22 April 2026) — AD Monitor country/foreign-signin fix
 
 **What was changed:**

@@ -168,9 +168,18 @@ function buildSegments(
 
 // ── Interpretation ────────────────────────────────────────────────────────────
 
-interface Interpretation { icon: string; headline: string; lines: string[] }
+interface Interpretation {
+  icon:         string
+  headline:     string
+  lines:        string[]
+  correlation?: { label: string; color: string; bgColor: string }
+}
 
-function interpret(stats: TargetStats[], series: LatencyResponse['series']): Interpretation {
+function interpret(
+  stats: TargetStats[],
+  series: LatencyResponse['series'],
+  targetTypes: Record<string, string>,
+): Interpretation {
   if (!series.length || !stats.length) {
     return {
       icon: '📡',
@@ -179,8 +188,7 @@ function interpret(stats: TargetStats[], series: LatencyResponse['series']): Int
     }
   }
 
-  const issues   = stats.filter(s => s.status === 'degraded' || s.status === 'down')
-  const isGateway = (s: TargetStats) => /gateway|gw/i.test(s.target)
+  const issues = stats.filter(s => s.status === 'degraded' || s.status === 'down')
 
   if (!issues.length) {
     const lines: string[] = []
@@ -193,7 +201,11 @@ function interpret(stats: TargetStats[], series: LatencyResponse['series']): Int
     return { icon: '✅', headline: 'All targets healthy', lines }
   }
 
-  // Find worst outage per degraded target
+  // Classify by actual target_type from the API (not a regex heuristic)
+  const lanIssues = issues.filter(s => !WAN_TYPES.has(targetTypes[s.target] ?? ''))
+  const wanIssues = issues.filter(s =>  WAN_TYPES.has(targetTypes[s.target] ?? ''))
+
+  // Per-target detail lines
   const lines: string[] = []
   for (const s of issues) {
     const segs = buildSegments(series, s.target).filter(seg => seg.health !== 'healthy')
@@ -202,29 +214,58 @@ function interpret(stats: TargetStats[], series: LatencyResponse['series']): Int
       const startStr = new Date(worst.startMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       const endStr   = new Date(worst.endMs  ).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       lines.push(
-        `${s.target} showed ${worst.worstLoss.toFixed(0)}% packet loss ${startStr}–${endStr} (${fmtMs(worst.endMs - worst.startMs)})`
+        `${s.target} showed ${worst.worstLoss.toFixed(0)}% loss ${startStr}–${endStr} (${fmtMs(worst.endMs - worst.startMs)})`
       )
     } else {
       lines.push(`${s.target}: ${s.avgLoss?.toFixed(1) ?? '0'}% avg packet loss`)
     }
   }
 
-  const gatewayIssues = issues.filter(isGateway)
-  const wanIssues     = issues.filter(s => !isGateway(s))
+  // Determine correlation label, icon, and headline
+  let correlation: Interpretation['correlation']
+  let icon: string
+  let headline: string
 
-  if (wanIssues.length && !gatewayIssues.length) {
-    lines.push('Gateway latency was normal throughout — internal network was fine.')
-    lines.push('Likely cause: ISP or upstream routing issue.')
+  if (issues.length === 1) {
+    correlation = {
+      label:   `Isolated — only ${issues[0].target} affected`,
+      color:   '#eab308',
+      bgColor: '#eab30818',
+    }
+    icon     = '⚠️'
+    headline = 'Isolated degradation'
+  } else if (lanIssues.length > 0 && wanIssues.length === 0) {
+    correlation = {
+      label:   'LAN Issue — loss isolated to internal network',
+      color:   '#eab308',
+      bgColor: '#eab30818',
+    }
+    lines.push('WAN/external targets unaffected — issue is on the internal network.')
+    lines.push('Check switch ports, LAN cables, and gateway.')
+    icon     = '🔴'
+    headline = 'Internal network degradation'
+  } else if (wanIssues.length > 0 && lanIssues.length === 0) {
+    correlation = {
+      label:   'WAN Issue — external connectivity affected',
+      color:   '#ef4444',
+      bgColor: '#ef444418',
+    }
+    lines.push('Internal LAN targets unaffected — issue is with WAN or ISP.')
     lines.push('Recommendation: Check ISP status page or contact provider.')
-    return { icon: '⚠️', headline: 'WAN degradation detected', lines }
+    icon     = '⚠️'
+    headline = 'WAN degradation detected'
+  } else {
+    correlation = {
+      label:   'Full Outage — all targets affected',
+      color:   '#ef4444',
+      bgColor: '#ef444418',
+    }
+    lines.push('Both internal and external targets affected — likely a gateway or pfSense fault.')
+    icon     = '🔴'
+    headline = 'Full network outage detected'
   }
 
-  if (gatewayIssues.length) {
-    lines.push('Gateway is also affected — investigate local network equipment or cabling.')
-    return { icon: '🔴', headline: 'Internal network degradation', lines }
-  }
-
-  return { icon: '⚠️', headline: 'Degradation detected', lines }
+  return { icon, headline, lines, correlation }
 }
 
 // ── Custom recharts tooltip ───────────────────────────────────────────────────
@@ -488,11 +529,12 @@ function OutageTimeline({ series, targets, colorMap }: {
 
 // ── Interpretation Panel ──────────────────────────────────────────────────────
 
-function InterpretationPanel({ stats, series }: {
-  stats:  TargetStats[]
-  series: LatencyResponse['series']
+function InterpretationPanel({ stats, series, targetTypes }: {
+  stats:       TargetStats[]
+  series:      LatencyResponse['series']
+  targetTypes: Record<string, string>
 }) {
-  const info = useMemo(() => interpret(stats, series), [stats, series])
+  const info = useMemo(() => interpret(stats, series, targetTypes), [stats, series, targetTypes])
 
   const iconBg: Record<string, string> = {
     '✅': '#22c55e22',
@@ -535,6 +577,28 @@ function InterpretationPanel({ stats, series }: {
             {info.headline}
           </span>
         </div>
+
+        {/* Correlation badge */}
+        {info.correlation && (
+          <div style={{
+            display:      'flex',
+            alignItems:   'center',
+            gap:          8,
+            background:   info.correlation.bgColor,
+            border:       `1px solid ${info.correlation.color}40`,
+            borderRadius: 'var(--radius)',
+            padding:      '7px 10px',
+            marginBottom: 14,
+          }}>
+            <span style={{
+              width: 7, height: 7, borderRadius: '50%',
+              background: info.correlation.color, flexShrink: 0,
+            }} />
+            <span style={{ fontSize: 11, fontWeight: 700, color: info.correlation.color, lineHeight: 1.3 }}>
+              {info.correlation.label}
+            </span>
+          </div>
+        )}
 
         {/* Bullet lines */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -912,7 +976,7 @@ export default function NetworkLatency() {
           </div>
 
           {/* Right column: interpretation */}
-          <InterpretationPanel stats={stats} series={series} />
+          <InterpretationPanel stats={stats} series={series} targetTypes={data?.target_types ?? {}} />
         </div>
       )}
     </div>

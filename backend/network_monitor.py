@@ -914,6 +914,83 @@ async def _check_wan_loss(db: AsyncSession) -> None:
             logger.info("WAN outage resolved")
 
 
+async def _check_packet_loss(db: AsyncSession) -> None:
+    """
+    Per-target packet loss check covering all latency targets (LAN and WAN).
+
+    Creates a 'packet_loss' incident as soon as a target's avg packet_loss_pct
+    exceeds 10 % over the last 5-minute window — no consecutive-cycle guard.
+    Severity: loss > 50 % → high, 10–50 % → medium.
+    Auto-resolves when the target drops back below 10 %.
+    """
+    rows = await _exec(db, """
+        SELECT target_ip::text AS ip, target_name,
+               AVG(packet_loss_pct) AS avg_loss
+        FROM latency_metrics
+        WHERE time > NOW() - INTERVAL '5 minutes'
+          AND packet_loss_pct IS NOT NULL
+        GROUP BY target_ip, target_name
+    """)
+
+    loss_by_ip: dict[str, tuple[str, float]] = {}
+    for r in rows:
+        ip = r.get("ip")
+        if ip is None:
+            continue
+        loss_by_ip[ip] = (r.get("target_name") or ip, float(r["avg_loss"] or 0))
+
+    lossy_ips: set[str] = {
+        ip for ip, (_, loss) in loss_by_ip.items() if loss > 10.0
+    }
+
+    # Auto-resolve targets that have recovered
+    open_incs = await _exec(db, """
+        SELECT id::text AS id, title, affected_ip::text AS affected_ip
+        FROM network_incidents
+        WHERE category = 'packet_loss' AND resolved_at IS NULL
+    """)
+    to_resolve = [
+        inc for inc in open_incs
+        if inc.get("affected_ip") not in lossy_ips
+    ]
+    if to_resolve:
+        await _resolve_incidents_batch(db, [inc["id"] for inc in to_resolve])
+        for inc in to_resolve:
+            await _send_telegram(f"✅ Resolved: {inc['title']}")
+            logger.info("Packet loss resolved for %s", inc.get("affected_ip"))
+
+    for ip, (target_name, avg_loss) in loss_by_ip.items():
+        if avg_loss <= 10.0:
+            continue
+        if await _get_open_incident(db, "packet_loss", affected_ip=ip):
+            continue
+        if await _recently_resolved(db, "packet_loss", affected_ip=ip):
+            continue
+
+        loss_pct = round(avg_loss, 1)
+        severity = "high" if avg_loss > 50 else "medium"
+        await _create_incident(
+            db,
+            severity=severity,
+            category="packet_loss",
+            title=f"Packet Loss: {target_name} ({loss_pct}%)",
+            description=(
+                f"Target {target_name} ({ip}) has {loss_pct}% packet loss "
+                f"in the last 5 minutes."
+            ),
+            affected_ip=ip,
+            evidence={"avg_loss_pct": loss_pct, "target_name": target_name},
+            incident_scope="device",
+        )
+        emoji = "🔴" if avg_loss > 50 else "⚠️"
+        msg   = f"{emoji} Packet loss on {target_name} ({ip}): {loss_pct}%"
+        link  = _investigate_link(ip)
+        if link:
+            msg += f"\n{link}"
+        await _rate_limited_telegram(msg, dedup_key=f"packet_loss:{ip}", db=db)
+        logger.warning("Packet loss incident opened: %s %.1f%%", ip, avg_loss)
+
+
 async def _check_interface_errors(db: AsyncSession) -> None:
     """
     Check 2: Ports with significant RX errors in the last 5 minutes.
@@ -1742,6 +1819,7 @@ async def run_maintenance_loop() -> None:
 _CHECKS = [
     _ping_and_store_wan_targets,   # must run first — writes WAN data that later checks read
     _check_wan_loss,
+    _check_packet_loss,
     _check_interface_errors,
     _check_devices_offline,
     _check_internal_latency,
