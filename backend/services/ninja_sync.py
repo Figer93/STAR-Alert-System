@@ -33,8 +33,9 @@ logger = logging.getLogger(__name__)
 _BASE_URL       = os.getenv("NINJA_BASE_URL", "https://eu.ninjarmm.com")
 _TOKEN_URL      = f"{_BASE_URL}/ws/oauth/token"
 _DEVICES_URL    = f"{_BASE_URL}/v2/devices-detailed"
-_OS_PATCHES_URL = f"{_BASE_URL}/v2/queries/os-patches"
-_INTERVAL       = 600  # 10 minutes
+_OS_PATCHES_URL      = f"{_BASE_URL}/v2/queries/os-patches"
+_OS_PATCH_REPORT_URL = f"{_BASE_URL}/v2/queries/os-patch-report"
+_INTERVAL            = 600  # 10 minutes
 
 
 class _TokenCache:
@@ -154,6 +155,43 @@ async def _fetch_os_patches(token: str) -> list[dict[str, Any]]:
     return all_patches
 
 
+async def _fetch_os_patch_report(token: str) -> list[dict[str, Any]]:
+    """
+    Fetch all records from /v2/queries/os-patch-report (pending/failed patches).
+    Same cursor-pagination pattern as _fetch_os_patches.
+    """
+    timeout = aiohttp.ClientTimeout(total=60)
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    all_records: list[dict[str, Any]] = []
+    cursor: str | None = None
+
+    async with aiohttp.ClientSession() as http:
+        while True:
+            params: dict[str, Any] = {"pageSize": 1000}
+            if cursor:
+                params["cursor"] = cursor
+            async with http.get(
+                _OS_PATCH_REPORT_URL, headers=headers, params=params, timeout=timeout, ssl=True
+            ) as resp:
+                if resp.status == 401:
+                    raise PermissionError("NinjaRMM: token rejected by os-patch-report endpoint")
+                resp.raise_for_status()
+                data = await resp.json()
+
+            if isinstance(data, dict):
+                results = data.get("results") or data.get("data") or []
+                cursor   = data.get("cursor") or data.get("nextCursor")
+            else:
+                results = data or []
+                cursor   = None
+
+            all_records.extend(results)
+            if not cursor or not results:
+                break
+
+    return all_records
+
+
 async def _fetch_device_software(token: str, ninja_id: int) -> list[dict[str, Any]]:
     url = f"{_BASE_URL}/v2/device/{ninja_id}/software"
     timeout = aiohttp.ClientTimeout(total=20)
@@ -203,26 +241,21 @@ async def _sync_patch_status(
     devices_by_id: dict[int, dict[str, Any]],
 ) -> None:
     """
-    Fetch /v2/queries/os-patches (individual patch records), aggregate counts
-    by device, upsert device_patch_status, and fire reboot alerts.
+    Fetch /v2/queries/os-patches for approved count and /v2/queries/os-patch-report
+    for pending/failed counts; upsert device_patch_status and fire reboot alerts.
     """
     from sqlalchemy import text
+    from collections import defaultdict
 
+    # ── Source 1: os-patches → approved count ─────────────────────────────────
     try:
         patch_rows = await _fetch_os_patches(token)
     except Exception:
         logger.exception("NinjaRMM: failed to fetch os-patches")
         return
 
-    # ── Aggregate individual patch records by device ──────────────────────────
-    # NinjaRMM patch status values observed in the wild:
-    #   APPROVED, FAILED, PENDING, PENDING_APPROVAL, NOT_APPROVED, INSTALLED
-    # We treat APPROVED + INSTALLED as approved/done; PENDING* as pending;
-    # FAILED as failed.  NOT_APPROVED rows are intentionally ignored.
-    from collections import defaultdict
-    by_device: dict[int, dict[str, Any]] = defaultdict(lambda: {
-        "approved": 0, "pending": 0, "failed": 0, "last_ts": None,
-    })
+    approved_by_device: dict[int, int] = defaultdict(int)
+    last_ts_by_device: dict[int, datetime | None] = defaultdict(lambda: None)
 
     for patch in patch_rows:
         did = patch.get("deviceId") or patch.get("device_id")
@@ -231,27 +264,49 @@ async def _sync_patch_status(
         did = int(did)
         status = (patch.get("status") or "").upper()
         if status in ("APPROVED", "INSTALLED"):
-            by_device[did]["approved"] += 1
-        elif "PENDING" in status:
-            by_device[did]["pending"] += 1
-        elif status == "FAILED":
-            by_device[did]["failed"] += 1
+            approved_by_device[did] += 1
 
-        # Track most-recent patch timestamp as last_scan
         ts = _parse_ts(patch.get("lastUpdated") or patch.get("updatedAt") or patch.get("timestamp"))
-        if ts and (by_device[did]["last_ts"] is None or ts > by_device[did]["last_ts"]):
-            by_device[did]["last_ts"] = ts
+        if ts and (last_ts_by_device[did] is None or ts > last_ts_by_device[did]):
+            last_ts_by_device[did] = ts
 
-    if patch_rows:
-        logger.debug("NinjaRMM: first raw patch record sample: %s", patch_rows[0])
-    logger.info("NinjaRMM: aggregated patch data for %d devices", len(by_device))
+    # ── Source 2: os-patch-report → pending / failed counts ───────────────────
+    try:
+        report_rows = await _fetch_os_patch_report(token)
+    except Exception:
+        logger.exception("NinjaRMM: failed to fetch os-patch-report")
+        report_rows = []
+
+    if report_rows:
+        logger.info("PATCH REPORT sample: %s", report_rows[0])
+
+    pending_by_device: dict[int, int] = defaultdict(int)
+    failed_by_device: dict[int, int] = defaultdict(int)
+
+    for record in report_rows:
+        did = record.get("deviceId") or record.get("device_id")
+        if not did:
+            continue
+        did = int(did)
+        status = (record.get("status") or "").upper()
+        if status in ("PENDING", "PENDING_APPROVAL"):
+            pending_by_device[did] += 1
+        elif status == "FAILED":
+            failed_by_device[did] += 1
+
+    all_device_ids = (
+        set(approved_by_device.keys())
+        | set(pending_by_device.keys())
+        | set(failed_by_device.keys())
+    )
+    logger.info(
+        "NinjaRMM: aggregated patch data for %d devices (%d from os-patches, %d from patch-report)",
+        len(all_device_ids), len(approved_by_device), len(pending_by_device) + len(failed_by_device),
+    )
 
     # ── Deduplicate by hostname ───────────────────────────────────────────────
-    # Multiple ninja_ids can share a hostname when a device is re-enrolled.
-    # Keep only the highest ninja_id (most recent enrollment) per hostname so
-    # we upsert a single row. The SQL query also uses DISTINCT ON as a safety net.
     hostname_to_best_id: dict[str, int] = {}
-    for ninja_id, counts in by_device.items():
+    for ninja_id in all_device_ids:
         dev      = devices_by_id.get(ninja_id, {})
         hostname = (
             dev.get("dnsName") or dev.get("systemName") or dev.get("hostname") or ""
@@ -262,32 +317,42 @@ async def _sync_patch_status(
         if existing is None or ninja_id > existing:
             hostname_to_best_id[hostname] = ninja_id
 
-    # Invert: set of canonical ninja_ids to actually upsert
     canonical_ids = set(hostname_to_best_id.values())
 
-    upserted    = 0
+    upserted     = 0
     alerts_fired = 0
+    reboot_logged = 0
 
-    for ninja_id, counts in by_device.items():
+    for ninja_id in all_device_ids:
         if ninja_id not in canonical_ids:
-            continue   # duplicate hostname — skip lower-numbered ninja_id
+            continue
         try:
             dev      = devices_by_id.get(ninja_id, {})
             hostname = (
                 dev.get("dnsName") or dev.get("systemName") or dev.get("hostname") or ""
             ).split(".")[0]
 
-            patches_approved = counts["approved"]
-            patches_pending  = counts["pending"]
-            patches_failed   = counts["failed"]
-            last_scan        = counts["last_ts"]
+            patches_approved = approved_by_device.get(ninja_id, 0)
+            patches_pending  = pending_by_device.get(ninja_id, 0)
+            patches_failed   = failed_by_device.get(ninja_id, 0)
+            last_scan        = last_ts_by_device.get(ninja_id)
 
-            # reboot_required: check various field names NinjaRMM uses
+            # Log reboot-related fields for first 3 devices to aid diagnostics
+            if reboot_logged < 3:
+                logger.info(
+                    "REBOOT FIELDS device %d: %s",
+                    ninja_id,
+                    {k: v for k, v in dev.items()
+                     if "reboot" in k.lower() or "pending" in k.lower()},
+                )
+                reboot_logged += 1
+
             reboot_required = bool(
                 dev.get("rebootRequired")
                 or dev.get("pendingReboot")
-                or dev.get("reboot_required")
+                or dev.get("needsReboot")
                 or (dev.get("os") or {}).get("pendingReboot")
+                or (dev.get("patches") or {}).get("rebootRequired")
             )
 
             await session.execute(
@@ -477,6 +542,7 @@ async def _sync_once(client_id: str, client_secret: str) -> None:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     token   = await _token_cache.get(client_id, client_secret)
+
     devices = await _fetch_devices(token)
     logger.info("NinjaRMM: fetched %d devices", len(devices))
 
