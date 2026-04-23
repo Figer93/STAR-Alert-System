@@ -4,6 +4,10 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm install
 COPY . .
+
+ARG VITE_API_SECRET_KEY
+ENV VITE_API_SECRET_KEY=$VITE_API_SECRET_KEY
+
 RUN npm run build
 
 FROM nginx:alpine

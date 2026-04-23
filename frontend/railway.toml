@@ -2,6 +2,7 @@
 builder = "dockerfile"
 dockerfilePath = "Dockerfile.frontend"
 watchPatterns = ["/frontend/**"]
+buildArgs = { VITE_API_SECRET_KEY = "${{VITE_API_SECRET_KEY}}" }
 
 [deploy]
 healthcheckPath = "/"
