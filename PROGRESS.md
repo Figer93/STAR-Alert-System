@@ -32,20 +32,19 @@
 - When packet loss fires, operators had no way to see WHERE in the path traffic was dropping
 - Traceroute pinpoints whether the drop is at the LAN gateway, an ISP hop, or the destination itself
 
-**Migration required (0029) — NOT YET APPLIED:**
-- `migrations/versions/0029_traceroute_results.py` — creates `traceroute_results` table + index
-- Apply with:
-  ```
-  API_SECRET_KEY=<key> COLLECTOR_SECRET=<key> railway run bash -c 'DATABASE_URL="$DATABASE_PUBLIC_URL" python -m alembic upgrade head'
-  ```
-- Before migration: GET /api/network/traceroute returns `[]`, POST returns 500 (gracefully logged) — safe to deploy code first
-- After migration: alembic_version will be `0029`
+**Migration applied (0029) — 2026-04-23:**
+- `migrations/versions/0029_traceroute_results.py` applied successfully
+- alembic_version is now `0029`
+- Backend deployed via `railway up` — deployment `31593539` — started clean, 8 checks registered
 
-**What to do next:**
-- Apply migration 0029 to production
-- Rebuild + redeploy the fping_collector container (docker compose up --build fping_collector)
-- Test by inducing a ping failure on a LAN target; check Railway logs for "Traceroute for X posted"
-- Verify traceroute panel appears when clicking a red/amber segment on the Latency page
+**What to do next (on-premise):**
+- Rebuild + redeploy the fping_collector container:
+  ```
+  docker compose up --build -d fping_collector
+  ```
+- Wait for a real loss event (>10% packet loss on any LAN target)
+- Check Railway deploy logs for: `"Traceroute for X posted — status=200"`
+- Check Latency page — click any red/amber outage segment to see the TraceroutePanel
 
 ---
 
