@@ -206,6 +206,7 @@ class PortStatus(BaseModel):
     last_error_time: Optional[datetime]
     errors_24h: list[dict[str, Any]] = []
     throughput_1h: list[dict[str, Any]] = []
+    is_uplink: bool = False
 
 
 class FlowRow(BaseModel):
@@ -1176,6 +1177,7 @@ async def get_ports(
             last_error_time=row.get("last_error_time"),
             errors_24h=err_map.get(key, []),
             throughput_1h=tput_map.get(key, []),
+            is_uplink=bool(row.get("is_uplink", False)),
         ))
 
     _ports_cache[cache_key] = (result, _time.monotonic())
@@ -2090,3 +2092,53 @@ async def delete_target(target_id: str, db: AsyncSession = Depends(get_db)):
 
     await _exec(db, "DELETE FROM fping_targets WHERE id::text = :id", {"id": target_id})
     await db.commit()
+
+
+# ── GET /api/network/traceroute ───────────────────────────────────────────────
+
+class TracerouteHopOut(BaseModel):
+    hop_num: int
+    ip: Optional[str]
+    rtt_ms: Optional[float]
+
+
+class TracerouteResultOut(BaseModel):
+    id: int
+    target_ip: str
+    target_name: Optional[str]
+    triggered_by_loss_pct: Optional[float]
+    hops: list[TracerouteHopOut]
+    collected_at: str
+
+
+@router.get("/traceroute", response_model=list[TracerouteResultOut])
+async def get_traceroute(
+    target_ip: str = Query(..., description="Target IP to look up"),
+    limit: int = Query(5, ge=1, le=20),
+    db: AsyncSession = Depends(get_db),
+) -> list[TracerouteResultOut]:
+    """Return the most recent traceroute results for a given target IP."""
+    rows = await _exec(db, """
+        SELECT id, target_ip, target_name, triggered_by_loss_pct, hops, collected_at
+          FROM traceroute_results
+         WHERE target_ip = :target_ip
+         ORDER BY collected_at DESC
+         LIMIT :limit
+    """, {"target_ip": target_ip, "limit": limit})
+
+    out = []
+    for r in rows:
+        raw_hops = r.get("hops") or []
+        if isinstance(raw_hops, str):
+            import json as _json
+            raw_hops = _json.loads(raw_hops)
+        collected = r["collected_at"]
+        out.append(TracerouteResultOut(
+            id=r["id"],
+            target_ip=r["target_ip"],
+            target_name=r.get("target_name"),
+            triggered_by_loss_pct=r.get("triggered_by_loss_pct"),
+            hops=[TracerouteHopOut(**h) for h in raw_hops],
+            collected_at=collected.isoformat() if hasattr(collected, "isoformat") else str(collected),
+        ))
+    return out

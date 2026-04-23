@@ -183,6 +183,16 @@ async def ingest_latency(
 
 # ── POST /api/collector/metrics/ports ────────────────────────────────────────
 
+_PORTS_COLS = (
+    "time, switch_id, switch_name, port_id, port_name, "
+    "device_name, device_ip, rx_bytes, tx_bytes, "
+    "rx_errors, tx_errors, rx_packets, tx_packets, "
+    "poe_watts, is_uplink, "
+    "rx_errors_delta, tx_errors_delta, "
+    "rx_bytes_delta, tx_bytes_delta, is_counter_reset"
+)
+
+
 @router.post("/metrics/ports")
 async def ingest_ports(
     payload: RowsPayload,
@@ -191,6 +201,9 @@ async def ingest_ports(
     """
     Insert switch_port_metrics rows from the collector buffer.
 
+    Accepts {"rows": [...]} with any number of port metric rows and uses a
+    single multi-row INSERT per chunk to minimise DB round-trips.
+
     Expected fields per row:
       time, switch_id, switch_name, port_id, port_name, device_name,
       device_ip, rx_bytes, tx_bytes, rx_errors, tx_errors,
@@ -198,12 +211,15 @@ async def ingest_ports(
       rx_errors_delta, tx_errors_delta, rx_bytes_delta, tx_bytes_delta,
       is_counter_reset
 
-    Phase 3B/3C: rows where rx/tx_errors_delta > 0 also write to
-    port_error_events and network_events, and update device_registry.last_error_at.
+    Rows where rx/tx_errors_delta > 0 also write to port_error_events and
+    network_events, and update device_registry.last_error_at.
     """
-    accepted = rejected = 0
-    _CHUNK = 50  # commit every N rows to bound connection-hold time
+    import json as _json
 
+    accepted = rejected = 0
+    _CHUNK = 100  # rows per multi-row INSERT; keeps param count well under PG limit
+
+    # ── Validate timestamps upfront ───────────────────────────────────────────
     valid_rows = []
     for row in payload.rows:
         if not _ts_ok(row.get("time")):
@@ -215,145 +231,167 @@ async def ingest_ports(
         else:
             valid_rows.append(row)
 
+    if not valid_rows:
+        return {"accepted": 0, "rejected": rejected}
+
     for chunk_start in range(0, len(valid_rows), _CHUNK):
         chunk = valid_rows[chunk_start : chunk_start + _CHUNK]
 
-        for row in chunk:
-            rx_errors_delta = _int(row.get("rx_errors_delta")) or 0
-            tx_errors_delta = _int(row.get("tx_errors_delta")) or 0
-            device_ip       = row.get("device_ip") or None
-            switch_id       = row.get("switch_id")
-            port_id_raw     = row.get("port_id")
-            port_id         = str(port_id_raw) if port_id_raw is not None else None
-            device_name     = row.get("device_name")
-            occurred_at     = row.get("time")
+        # ── Build single multi-row INSERT for this chunk ──────────────────────
+        value_clauses: list[str] = []
+        params: dict = {}
+        prepared: list[dict] = []  # pre-parsed data reused for error side-writes
 
-            try:
-                await db.execute(
-                    text("""
-                        INSERT INTO switch_port_metrics
-                            (time, switch_id, switch_name, port_id, port_name,
-                             device_name, device_ip, rx_bytes, tx_bytes,
-                             rx_errors, tx_errors, rx_packets, tx_packets,
-                             poe_watts, is_uplink,
-                             rx_errors_delta, tx_errors_delta,
-                             rx_bytes_delta, tx_bytes_delta, is_counter_reset)
-                        VALUES
-                            (:time, :switch_id, :switch_name, :port_id, :port_name,
-                             :device_name, CAST(:device_ip AS INET), :rx_bytes, :tx_bytes,
-                             :rx_errors, :tx_errors, :rx_packets, :tx_packets,
-                             :poe_watts, :is_uplink,
-                             :rx_errors_delta, :tx_errors_delta,
-                             :rx_bytes_delta, :tx_bytes_delta, :is_counter_reset)
-                    """),
-                    {
-                        "time":             _parse_ts(occurred_at),
-                        "switch_id":        switch_id,
-                        "switch_name":      row.get("switch_name"),
-                        "port_id":          port_id,
-                        "port_name":        row.get("port_name"),
-                        "device_name":      device_name,
-                        "device_ip":        device_ip,
-                        "rx_bytes":         _int(row.get("rx_bytes")),
-                        "tx_bytes":         _int(row.get("tx_bytes")),
-                        "rx_errors":        _int(row.get("rx_errors")),
-                        "tx_errors":        _int(row.get("tx_errors")),
-                        "rx_packets":       _int(row.get("rx_packets")),
-                        "tx_packets":       _int(row.get("tx_packets")),
-                        "poe_watts":        _float(row.get("poe_watts")),
-                        "is_uplink":        row.get("is_uplink", False),
-                        "rx_errors_delta":  rx_errors_delta,
-                        "tx_errors_delta":  tx_errors_delta,
-                        "rx_bytes_delta":   _int(row.get("rx_bytes_delta")) or 0,
-                        "tx_bytes_delta":   _int(row.get("tx_bytes_delta")) or 0,
-                        "is_counter_reset": row.get("is_counter_reset", False),
-                    },
-                )
-                accepted += 1
-            except Exception as exc:
-                logger.error("Failed to insert port row: %s — %s", row, exc)
-                await db.rollback()
-                rejected += 1
+        for i, row in enumerate(chunk):
+            rx_ed       = _int(row.get("rx_errors_delta")) or 0
+            tx_ed       = _int(row.get("tx_errors_delta")) or 0
+            port_id_raw = row.get("port_id")
+            port_id     = str(port_id_raw) if port_id_raw is not None else None
+            device_ip   = row.get("device_ip") or None
+
+            value_clauses.append(
+                f"(:time_{i}, :switch_id_{i}, :switch_name_{i}, :port_id_{i}, "
+                f":port_name_{i}, :device_name_{i}, CAST(:device_ip_{i} AS INET), "
+                f":rx_bytes_{i}, :tx_bytes_{i}, :rx_errors_{i}, :tx_errors_{i}, "
+                f":rx_packets_{i}, :tx_packets_{i}, :poe_watts_{i}, :is_uplink_{i}, "
+                f":rx_errors_delta_{i}, :tx_errors_delta_{i}, "
+                f":rx_bytes_delta_{i}, :tx_bytes_delta_{i}, :is_counter_reset_{i})"
+            )
+            params.update({
+                f"time_{i}":             _parse_ts(row.get("time")),
+                f"switch_id_{i}":        row.get("switch_id"),
+                f"switch_name_{i}":      row.get("switch_name"),
+                f"port_id_{i}":          port_id,
+                f"port_name_{i}":        row.get("port_name"),
+                f"device_name_{i}":      row.get("device_name"),
+                f"device_ip_{i}":        device_ip,
+                f"rx_bytes_{i}":         _int(row.get("rx_bytes")),
+                f"tx_bytes_{i}":         _int(row.get("tx_bytes")),
+                f"rx_errors_{i}":        _int(row.get("rx_errors")),
+                f"tx_errors_{i}":        _int(row.get("tx_errors")),
+                f"rx_packets_{i}":       _int(row.get("rx_packets")),
+                f"tx_packets_{i}":       _int(row.get("tx_packets")),
+                f"poe_watts_{i}":        _float(row.get("poe_watts")),
+                f"is_uplink_{i}":        row.get("is_uplink", False),
+                f"rx_errors_delta_{i}":  rx_ed,
+                f"tx_errors_delta_{i}":  tx_ed,
+                f"rx_bytes_delta_{i}":   _int(row.get("rx_bytes_delta")) or 0,
+                f"tx_bytes_delta_{i}":   _int(row.get("tx_bytes_delta")) or 0,
+                f"is_counter_reset_{i}": row.get("is_counter_reset", False),
+            })
+            prepared.append({
+                "switch_id":       row.get("switch_id"),
+                "port_id":         port_id,
+                "device_name":     row.get("device_name"),
+                "device_ip":       device_ip,
+                "rx_errors_delta": rx_ed,
+                "tx_errors_delta": tx_ed,
+                "occurred_at":     row.get("time"),
+            })
+
+        try:
+            await db.execute(
+                text(
+                    f"INSERT INTO switch_port_metrics ({_PORTS_COLS}) "
+                    f"VALUES {', '.join(value_clauses)}"
+                ),
+                params,
+            )
+            accepted += len(chunk)
+        except Exception as exc:
+            logger.error(
+                "Batch INSERT failed for port chunk %d–%d: %s",
+                chunk_start, chunk_start + len(chunk) - 1, exc,
+            )
+            await db.rollback()
+            rejected += len(chunk)
+            continue  # skip error side-writes for this chunk; try next
+
+        # ── Error event side-writes (best-effort; never fail the batch) ───────
+        for pd in prepared:
+            if pd["rx_errors_delta"] <= 0 and pd["tx_errors_delta"] <= 0:
                 continue
 
-            # Phase 3B/3C — error event side-writes (best-effort; never fail the batch)
-            if rx_errors_delta > 0 or tx_errors_delta > 0:
-                try:
-                    # port_error_events: one row per erroring port per cycle
-                    await db.execute(text("""
-                        INSERT INTO port_error_events
-                            (switch_id, port_id, device_name, device_ip,
-                             rx_errors_delta, tx_errors_delta, occurred_at)
-                        VALUES
-                            (:switch_id, :port_id, :device_name,
-                             CAST(NULLIF(:device_ip, '') AS INET),
-                             :rx_errors_delta, :tx_errors_delta, :occurred_at)
-                    """), {
+            switch_id   = pd["switch_id"]
+            port_id     = pd["port_id"]
+            device_name = pd["device_name"]
+            device_ip   = pd["device_ip"]
+            rx_ed       = pd["rx_errors_delta"]
+            tx_ed       = pd["tx_errors_delta"]
+            occurred_at = pd["occurred_at"]
+
+            try:
+                await db.execute(text("""
+                    INSERT INTO port_error_events
+                        (switch_id, port_id, device_name, device_ip,
+                         rx_errors_delta, tx_errors_delta, occurred_at)
+                    VALUES
+                        (:switch_id, :port_id, :device_name,
+                         CAST(NULLIF(:device_ip, '') AS INET),
+                         :rx_errors_delta, :tx_errors_delta, :occurred_at)
+                """), {
+                    "switch_id":       switch_id,
+                    "port_id":         port_id,
+                    "device_name":     device_name,
+                    "device_ip":       device_ip,
+                    "rx_errors_delta": rx_ed,
+                    "tx_errors_delta": tx_ed,
+                    "occurred_at":     occurred_at,
+                })
+
+                error_desc = (
+                    f"Port {port_id} on switch {switch_id}: "
+                    f"rx_errors_delta={rx_ed}, tx_errors_delta={tx_ed}"
+                )
+                if device_name:
+                    error_desc = f"{device_name} — " + error_desc
+
+                await db.execute(text("""
+                    INSERT INTO network_events
+                        (event_type, device_ip, description, metadata, occurred_at)
+                    VALUES
+                        ('port_error', CAST(NULLIF(:device_ip, '') AS INET),
+                         :description, :metadata::jsonb, :occurred_at)
+                """), {
+                    "device_ip":   device_ip,
+                    "description": error_desc,
+                    "metadata": _json.dumps({
                         "switch_id":       switch_id,
-                        "port_id":         str(port_id),
+                        "port_id":         port_id,
                         "device_name":     device_name,
-                        "device_ip":       device_ip,
-                        "rx_errors_delta": rx_errors_delta,
-                        "tx_errors_delta": tx_errors_delta,
-                        "occurred_at":     occurred_at,
-                    })
+                        "rx_errors_delta": rx_ed,
+                        "tx_errors_delta": tx_ed,
+                    }),
+                    "occurred_at": occurred_at,
+                })
 
-                    # network_events: timeline entry
-                    error_desc = (
-                        f"Port {port_id} on switch {switch_id}: "
-                        f"rx_errors_delta={rx_errors_delta}, tx_errors_delta={tx_errors_delta}"
-                    )
-                    if device_name:
-                        error_desc = f"{device_name} — " + error_desc
-
+                if device_ip:
                     await db.execute(text("""
-                        INSERT INTO network_events
-                            (event_type, device_ip, description, metadata, occurred_at)
-                        VALUES
-                            ('port_error', CAST(NULLIF(:device_ip, '') AS INET),
-                             :description, :metadata::jsonb, :occurred_at)
+                        UPDATE device_registry
+                           SET last_error_at   = :occurred_at,
+                               last_error_desc = :desc
+                         WHERE ip::text = :ip
+                           AND (last_error_at IS NULL OR last_error_at < :occurred_at)
                     """), {
-                        "device_ip":   device_ip,
-                        "description": error_desc,
-                        "metadata": __import__("json").dumps({
-                            "switch_id":       switch_id,
-                            "port_id":         str(port_id),
-                            "device_name":     device_name,
-                            "rx_errors_delta": rx_errors_delta,
-                            "tx_errors_delta": tx_errors_delta,
-                        }),
+                        "ip":          device_ip,
                         "occurred_at": occurred_at,
+                        "desc":        f"Port {port_id}: rx={rx_ed} tx={tx_ed} errors",
                     })
 
-                    # device_registry: update last_error_at/desc if we have a device_ip
-                    if device_ip:
-                        await db.execute(text("""
-                            UPDATE device_registry
-                               SET last_error_at   = :occurred_at,
-                                   last_error_desc = :desc
-                             WHERE ip::text = :ip
-                               AND (last_error_at IS NULL OR last_error_at < :occurred_at)
-                        """), {
-                            "ip":         device_ip,
-                            "occurred_at": occurred_at,
-                            "desc": (
-                                f"Port {port_id}: rx={rx_errors_delta} "
-                                f"tx={tx_errors_delta} errors"
-                            ),
-                        })
-                except Exception as exc:
-                    logger.error(
-                        "Failed to write error event for switch=%s port=%s: %s",
-                        switch_id, port_id, exc,
-                    )
-                    await db.rollback()
+            except Exception as exc:
+                logger.error(
+                    "Failed to write error event for switch=%s port=%s: %s",
+                    switch_id, port_id, exc,
+                )
+                await db.rollback()
 
-        # Commit after each chunk to release the DB connection promptly.
         try:
             await db.commit()
         except Exception as exc:
-            logger.error("Failed to commit ports chunk (rows %d–%d): %s",
-                         chunk_start, chunk_start + len(chunk) - 1, exc)
+            logger.error(
+                "Failed to commit ports chunk %d–%d: %s",
+                chunk_start, chunk_start + len(chunk) - 1, exc,
+            )
             await db.rollback()
             raise HTTPException(status_code=500, detail="DB commit failed")
 
@@ -540,6 +578,64 @@ async def ingest_heartbeat(
         logger.error("Failed to upsert heartbeat: %s", exc)
         await db.rollback()
         raise HTTPException(status_code=500, detail="DB commit failed")
+
+    return {"status": "ok"}
+
+
+# ── POST /api/collector/metrics/traceroute ────────────────────────────────────
+
+class TracerouteHop(BaseModel):
+    hop_num: int
+    ip: str | None
+    rtt_ms: float | None
+
+
+class TraceroutePayload(BaseModel):
+    target_ip:             str
+    target_name:           str | None = None
+    triggered_by_loss_pct: float | None = None
+    hops:                  list[TracerouteHop]
+    collected_at:          str
+
+
+@router.post("/metrics/traceroute")
+async def ingest_traceroute(
+    payload: TraceroutePayload,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, str]:
+    """
+    Insert a traceroute result triggered by the collector on >10% packet loss.
+
+    Payload: {target_ip, target_name, triggered_by_loss_pct, hops, collected_at}
+    hops: [{hop_num, ip, rtt_ms}]  — ip is null for non-responding hops (*)
+    """
+    import json as _json
+
+    if not _ts_ok(payload.collected_at):
+        raise HTTPException(status_code=422, detail="collected_at timestamp out of range")
+
+    try:
+        await db.execute(
+            text("""
+                INSERT INTO traceroute_results
+                    (target_ip, target_name, triggered_by_loss_pct, hops, collected_at)
+                VALUES
+                    (:target_ip, :target_name, :triggered_by_loss_pct,
+                     :hops::jsonb, :collected_at)
+            """),
+            {
+                "target_ip":             payload.target_ip,
+                "target_name":           payload.target_name,
+                "triggered_by_loss_pct": payload.triggered_by_loss_pct,
+                "hops":                  _json.dumps([h.model_dump() for h in payload.hops]),
+                "collected_at":          _parse_ts(payload.collected_at),
+            },
+        )
+        await db.commit()
+    except Exception as exc:
+        logger.error("Failed to insert traceroute for %s: %s", payload.target_ip, exc)
+        await db.rollback()
+        raise HTTPException(status_code=500, detail="DB write failed")
 
     return {"status": "ok"}
 

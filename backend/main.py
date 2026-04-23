@@ -10,11 +10,17 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from fastapi import Depends
+
 from backend.config import settings
 from backend.database import init_db
+from backend.middleware.auth import verify_api_key, verify_collector_key
 from backend.network_monitor import run_network_checks, run_maintenance_loop
 from backend.routers import ad, alerts, collector, ingest, m365, maintenance, network, ninja, notifications, notification_settings, rules, sources, stats, system, ws
 from backend.websocket_manager import ws_manager
+
+_auth      = [Depends(verify_api_key)]
+_coll_auth = [Depends(verify_collector_key)]
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 
@@ -241,9 +247,10 @@ async def _retention_cleanup():
     Purge stale time-series rows on startup, then once every hour.
 
     Retention policy:
-      latency_metrics      — keep 2 days
       switch_port_metrics  — keep 24 hours
       network_incidents    — keep 30 days (resolved only; open incidents are kept forever)
+
+    latency_metrics retention is handled by network_monitor.run_maintenance_loop (7 days).
     """
     from sqlalchemy import text
     from backend.database import AsyncSessionLocal
@@ -255,15 +262,16 @@ async def _retention_cleanup():
         try:
             async with AsyncSessionLocal() as db:
                 await db.execute(text(
-                    "DELETE FROM latency_metrics WHERE time < NOW() - INTERVAL '2 days'"
-                ))
-                await db.execute(text(
                     "DELETE FROM switch_port_metrics WHERE time < NOW() - INTERVAL '24 hours'"
                 ))
                 await db.execute(text(
                     "DELETE FROM network_incidents "
                     "WHERE resolved_at IS NOT NULL "
                     "  AND started_at < NOW() - INTERVAL '30 days'"
+                ))
+                await db.execute(text(
+                    "DELETE FROM traceroute_results "
+                    "WHERE collected_at < NOW() - INTERVAL '7 days'"
                 ))
                 await db.commit()
             logger.info("Retention cleanup complete")
@@ -283,6 +291,17 @@ async def lifespan(app: FastAPI):
     await init_db()
     await _seed_channel_settings()
     logger.info("Database initialised")
+
+    if not settings.NINJARMM_WEBHOOK_SECRET:
+        logger.warning(
+            "NINJARMM_WEBHOOK_SECRET not set — "
+            "/api/ingest/ninjarmm will reject ALL requests until a secret is configured"
+        )
+    if not settings.PINGPLOTTER_WEBHOOK_SECRET:
+        logger.warning(
+            "PINGPLOTTER_WEBHOOK_SECRET not set — "
+            "/api/ingest/pingplotter will reject ALL requests until a secret is configured"
+        )
 
     # Pre-warm caches before serving traffic
     try:
@@ -383,20 +402,24 @@ app.add_middleware(
 )
 
 # Routers
-app.include_router(alerts.router)
-app.include_router(collector.router)
-app.include_router(sources.router)
-app.include_router(stats.router)
-app.include_router(rules.router)
-app.include_router(ingest.router)
-app.include_router(notifications.router)
-app.include_router(notification_settings.router)
-app.include_router(maintenance.router)
-app.include_router(ad.router)
-app.include_router(m365.router)
-app.include_router(network.router)
-app.include_router(ninja.router)
-app.include_router(system.router)
+# /health is defined directly on `app` below — stays open for Railway healthchecks.
+# /api/collector/* uses _coll_auth (X-Collector-Key header).
+# /ws auth is handled via ?api_key= query param inside ws.py.
+# All other routers require X-API-Key header via _auth.
+app.include_router(alerts.router,                dependencies=_auth)
+app.include_router(collector.router,             dependencies=_coll_auth)
+app.include_router(sources.router,               dependencies=_auth)
+app.include_router(stats.router,                 dependencies=_auth)
+app.include_router(rules.router,                 dependencies=_auth)
+app.include_router(ingest.router,                dependencies=_auth)
+app.include_router(notifications.router,         dependencies=_auth)
+app.include_router(notification_settings.router, dependencies=_auth)
+app.include_router(maintenance.router,           dependencies=_auth)
+app.include_router(ad.router,                    dependencies=_auth)
+app.include_router(m365.router,                  dependencies=_auth)
+app.include_router(network.router,               dependencies=_auth)
+app.include_router(ninja.router,                 dependencies=_auth)
+app.include_router(system.router,                dependencies=_auth)
 app.include_router(ws.router)
 
 

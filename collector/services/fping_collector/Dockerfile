@@ -2,7 +2,7 @@ FROM python:3.12-slim
 
 # fping must be installed at the OS level — pip cannot provide it.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends fping \
+    && apt-get install -y --no-install-recommends fping traceroute \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

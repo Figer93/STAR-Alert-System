@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Activity, Download } from 'lucide-react'
+import { Activity, Download, X } from 'lucide-react'
+import { getTraceroute, type TracerouteResult } from '../../lib/api'
 import {
   ComposedChart, Line, XAxis, YAxis, CartesianGrid,
   Tooltip as ReTooltip, ReferenceLine, Brush, ResponsiveContainer,
@@ -398,10 +399,11 @@ interface TimelineTip {
   y:       number
 }
 
-function OutageTimeline({ series, targets, colorMap }: {
-  series:    LatencyResponse['series']
-  targets:   string[]
-  colorMap:  Record<string, string>
+function OutageTimeline({ series, targets, colorMap, onSegmentClick }: {
+  series:          LatencyResponse['series']
+  targets:         string[]
+  colorMap:        Record<string, string>
+  onSegmentClick?: (target: string, segment: TimelineSegment) => void
 }) {
   const [tip, setTip] = useState<TimelineTip | null>(null)
 
@@ -451,11 +453,12 @@ function OutageTimeline({ series, targets, colorMap }: {
                       onMouseEnter={e => setTip({ segment: seg, target, x: e.clientX, y: e.clientY })}
                       onMouseMove={e  => tip && setTip({ segment: seg, target, x: e.clientX, y: e.clientY })}
                       onMouseLeave={()  => setTip(null)}
+                      onClick={() => seg.health !== 'healthy' && onSegmentClick?.(target, seg)}
                       style={{
                         width:      `${Math.max(w, 0.3)}%`,
                         background: SEG_COLORS[seg.health],
                         opacity:    seg.health === 'healthy' ? 0.7 : 1,
-                        cursor:     'default',
+                        cursor:     seg.health !== 'healthy' && onSegmentClick ? 'pointer' : 'default',
                         flexShrink: 0,
                       }}
                     />
@@ -478,7 +481,7 @@ function OutageTimeline({ series, targets, colorMap }: {
       </div>
 
       {/* Legend */}
-      <div style={{ display: 'flex', gap: 16, marginTop: 10, paddingLeft: 110 }}>
+      <div style={{ display: 'flex', gap: 16, marginTop: 10, paddingLeft: 110, flexWrap: 'wrap', alignItems: 'center' }}>
         {(Object.entries(SEG_COLORS) as [TimelineSegment['health'], string][]).map(([h, c]) => (
           <span key={h} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 10, color: 'var(--text-dim)' }}>
             <span style={{ width: 10, height: 10, borderRadius: 2, background: c, display: 'inline-block' }} />
@@ -487,6 +490,11 @@ function OutageTimeline({ series, targets, colorMap }: {
             {h === 'down'     && ' (>10% loss)'}
           </span>
         ))}
+        {onSegmentClick && (
+          <span style={{ fontSize: 10, color: 'var(--text-dim)', marginLeft: 'auto', opacity: 0.7 }}>
+            Click a red/amber segment for traceroute
+          </span>
+        )}
       </div>
 
       {/* Hover tooltip */}
@@ -522,6 +530,133 @@ function OutageTimeline({ series, targets, colorMap }: {
             </p>
           )}
         </div>
+      )}
+    </div>
+  )
+}
+
+// ── Traceroute Panel ──────────────────────────────────────────────────────────
+
+function TraceroutePanel({
+  target, data, loading, onClose,
+}: {
+  target:   string
+  data:     TracerouteResult[] | null
+  loading:  boolean
+  onClose:  () => void
+}) {
+  const result = data?.[0] ?? null
+
+  // Determine the last responding hop before destination (for amber highlight)
+  const destinationReached = result?.hops.some(h => h.ip === result.target_ip) ?? false
+  const lastRespondingHop  = result && !destinationReached
+    ? [...result.hops].reverse().find(h => h.ip !== null)
+    : null
+
+  return (
+    <div style={{
+      background:   'var(--bg-surface)',
+      border:       '1px solid var(--border)',
+      borderRadius: 'var(--radius)',
+      padding:      '14px 16px',
+      position:     'relative',
+    }}>
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+        <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-dim)', margin: 0 }}>
+          Traceroute — {target}
+        </p>
+        <button
+          onClick={onClose}
+          style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-dim)', padding: 2, display: 'flex', alignItems: 'center' }}
+        >
+          <X size={13} />
+        </button>
+      </div>
+
+      {loading && (
+        <div style={{ height: 60, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <p style={{ color: 'var(--text-dim)', fontSize: 12 }}>Running traceroute…</p>
+        </div>
+      )}
+
+      {!loading && !result && (
+        <p style={{ color: 'var(--text-dim)', fontSize: 12, margin: 0 }}>
+          No traceroute data for this event.
+        </p>
+      )}
+
+      {!loading && result && (
+        <>
+          {/* Meta */}
+          <div style={{ display: 'flex', gap: 16, marginBottom: 12, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+              Captured:{' '}
+              <span style={{ color: 'var(--text)' }}>
+                {new Date(result.collected_at).toLocaleString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+              </span>
+            </span>
+            {result.triggered_by_loss_pct != null && (
+              <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+                Loss at trigger:{' '}
+                <span style={{ color: '#ef4444', fontWeight: 700 }}>
+                  {result.triggered_by_loss_pct.toFixed(1)}%
+                </span>
+              </span>
+            )}
+          </div>
+
+          {/* Hop table */}
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <thead>
+              <tr style={{ borderBottom: '1px solid var(--border)' }}>
+                {['Hop', 'IP', 'RTT'].map(h => (
+                  <th key={h} style={{ textAlign: 'left', padding: '3px 8px', fontSize: 10, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {result.hops.map((hop) => {
+                const isNoResponse     = hop.ip === null
+                const isLastResponding = lastRespondingHop && hop.hop_num === lastRespondingHop.hop_num
+                const rowColor = isNoResponse     ? '#ef444422'
+                               : isLastResponding ? '#eab30822'
+                               : 'transparent'
+                const textColor = isNoResponse     ? '#ef4444'
+                                : isLastResponding ? '#eab308'
+                                : 'var(--text)'
+
+                return (
+                  <tr key={hop.hop_num} style={{ background: rowColor, borderBottom: '1px solid var(--border)' }}>
+                    <td style={{ padding: '4px 8px', color: 'var(--text-dim)', fontFamily: 'monospace' }}>
+                      {hop.hop_num}
+                    </td>
+                    <td style={{ padding: '4px 8px', color: textColor, fontFamily: 'monospace', fontWeight: isNoResponse ? 400 : 600 }}>
+                      {hop.ip ?? '*'}
+                    </td>
+                    <td style={{ padding: '4px 8px', color: textColor, fontFamily: 'monospace' }}>
+                      {hop.rtt_ms != null ? `${hop.rtt_ms.toFixed(1)} ms` : '—'}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+
+          {/* Legend */}
+          <div style={{ display: 'flex', gap: 14, marginTop: 10, flexWrap: 'wrap' }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 10, color: 'var(--text-dim)' }}>
+              <span style={{ width: 10, height: 10, borderRadius: 2, background: '#ef444422', border: '1px solid #ef444466', display: 'inline-block' }} />
+              No response (*)
+            </span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 10, color: 'var(--text-dim)' }}>
+              <span style={{ width: 10, height: 10, borderRadius: 2, background: '#eab30822', border: '1px solid #eab30866', display: 'inline-block' }} />
+              Last responding hop
+            </span>
+          </div>
+        </>
       )}
     </div>
   )
@@ -646,6 +781,11 @@ export default function NetworkLatency() {
   const [checked, setChecked]       = useState<Set<string>>(new Set())
   const [checkedInit, setCheckedInit] = useState(false)
 
+  // Traceroute state
+  const [trTarget,  setTrTarget]  = useState<string | null>(null)
+  const [trData,    setTrData]    = useState<TracerouteResult[] | null>(null)
+  const [trLoading, setTrLoading] = useState(false)
+
   // ── Fetch ─────────────────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -714,6 +854,20 @@ export default function NetworkLatency() {
       else              next.add(t)
       return next
     })
+  }
+
+  async function handleSegmentClick(target: string, _segment: TimelineSegment) {
+    setTrTarget(target)
+    setTrData(null)
+    setTrLoading(true)
+    try {
+      const results = await getTraceroute(target, 1)
+      setTrData(results)
+    } catch {
+      setTrData([])
+    } finally {
+      setTrLoading(false)
+    }
   }
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -971,7 +1125,22 @@ export default function NetworkLatency() {
 
             {/* ── Outage timeline ───────────────────────────────────────────── */}
             {series.length > 1 && (
-              <OutageTimeline series={series} targets={visibleTargets} colorMap={colorMap} />
+              <OutageTimeline
+                series={series}
+                targets={visibleTargets}
+                colorMap={colorMap}
+                onSegmentClick={handleSegmentClick}
+              />
+            )}
+
+            {/* ── Traceroute panel ──────────────────────────────────────────── */}
+            {trTarget && (
+              <TraceroutePanel
+                target={trTarget}
+                data={trData}
+                loading={trLoading}
+                onClose={() => { setTrTarget(null); setTrData(null) }}
+              />
             )}
           </div>
 

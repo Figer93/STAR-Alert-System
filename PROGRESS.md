@@ -1,6 +1,55 @@
 # STAR Alert System — Progress Log
 
-## Last Session (23 April 2026) — Packet loss incidents + latency correlation analysis
+## Last Session (23 April 2026) — Traceroute hop visibility on packet loss
+
+**What was changed:**
+
+- `collector/services/fping_collector/Dockerfile`: added `traceroute` to apt-get install
+- `collector/services/fping_collector/main.py`:
+  - Added `COLLECTOR_SECRET` env var read (used for direct POST auth)
+  - Added `_tr_last` debounce dict + `_TR_COOLDOWN = 60.0 s`
+  - Added `_tr_queue` (stdlib `queue.Queue`) for non-blocking background runs
+  - Added `_parse_traceroute()` — parses `traceroute -n -w 2 -q 1 -m 20` output into `[{hop_num, ip, rtt_ms}]`
+  - Added `_post_traceroute()` — POSTs directly to `/api/collector/metrics/traceroute` with `X-Collector-Key`
+  - Added `_run_traceroute()` — called from worker thread; handles timeouts and errors
+  - Added `_traceroute_worker()` background daemon thread (drains queue sequentially)
+  - Main loop: after each fping cycle, enqueues any target with >10% loss (debounced 60 s)
+- `backend/routers/collector.py`:
+  - Added `TracerouteHop` + `TraceroutePayload` Pydantic models
+  - Added `POST /api/collector/metrics/traceroute` — validates timestamp, inserts into `traceroute_results` (JSONB hops column)
+- `backend/routers/network.py`:
+  - Added `TracerouteHopOut` + `TracerouteResultOut` Pydantic models
+  - Added `GET /api/network/traceroute?target_ip={ip}&limit=5` — returns last N results via `_exec` (returns `[]` gracefully if table missing)
+- `backend/main.py`: added `traceroute_results` 7-day DELETE to `_retention_cleanup`
+- `frontend/src/lib/api.ts`: added `TracerouteHop`, `TracerouteResult` interfaces and `getTraceroute()` function
+- `frontend/src/pages/network/Latency.tsx`:
+  - Added `TraceroutePanel` component (hop table with red/amber row highlights, loading state, close button)
+  - `OutageTimeline` now accepts `onSegmentClick?` prop; red/degraded segments are clickable (pointer cursor)
+  - `NetworkLatency` manages `trTarget`, `trData`, `trLoading` state; click handler fetches traceroute via `getTraceroute()`
+  - `TraceroutePanel` renders below the outage timeline when a segment is clicked
+
+**Why it was changed:**
+- When packet loss fires, operators had no way to see WHERE in the path traffic was dropping
+- Traceroute pinpoints whether the drop is at the LAN gateway, an ISP hop, or the destination itself
+
+**Migration required (0029) — NOT YET APPLIED:**
+- `migrations/versions/0029_traceroute_results.py` — creates `traceroute_results` table + index
+- Apply with:
+  ```
+  API_SECRET_KEY=<key> COLLECTOR_SECRET=<key> railway run bash -c 'DATABASE_URL="$DATABASE_PUBLIC_URL" python -m alembic upgrade head'
+  ```
+- Before migration: GET /api/network/traceroute returns `[]`, POST returns 500 (gracefully logged) — safe to deploy code first
+- After migration: alembic_version will be `0029`
+
+**What to do next:**
+- Apply migration 0029 to production
+- Rebuild + redeploy the fping_collector container (docker compose up --build fping_collector)
+- Test by inducing a ping failure on a LAN target; check Railway logs for "Traceroute for X posted"
+- Verify traceroute panel appears when clicking a red/amber segment on the Latency page
+
+---
+
+## Previous Session (23 April 2026) — Packet loss incidents + latency correlation analysis
 
 **What was changed:**
 - `backend/network_monitor.py`: Added `_check_packet_loss` function and registered it in `_CHECKS` (runs after `_check_wan_loss`)

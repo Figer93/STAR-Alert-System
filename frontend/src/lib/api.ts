@@ -361,6 +361,26 @@ export const getM365Health = () =>
 export const getM365Incidents = (resolved = false) =>
   api.get<M365Incident[]>('/m365/incidents', { params: { resolved } }).then(r => r.data)
 
+// ── Traceroute ────────────────────────────────────────────────────────────────
+
+export interface TracerouteHop {
+  hop_num: number
+  ip:      string | null
+  rtt_ms:  number | null
+}
+
+export interface TracerouteResult {
+  id:                    number
+  target_ip:             string
+  target_name:           string | null
+  triggered_by_loss_pct: number | null
+  hops:                  TracerouteHop[]
+  collected_at:          string
+}
+
+export const getTraceroute = (target_ip: string, limit = 1) =>
+  api.get<TracerouteResult[]>('/network/traceroute', { params: { target_ip, limit } }).then(r => r.data)
+
 // ── CSV export ────────────────────────────────────────────────────────────────
 
 export const exportAlertsCsv = () => {
