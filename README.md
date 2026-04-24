@@ -1,4 +1,3 @@
-[README (2).md](https://github.com/user-attachments/files/27050170/README.2.md)
 # STAR Alert System
 
 Built this because the company I work for — a regulated financial services firm — had no real visibility into its own network. Alerts came from users complaining. I wanted to change that.
