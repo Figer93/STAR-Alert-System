@@ -1,5 +1,7 @@
 # STAR Alert System
 
+![Network Overview](./docs/dashboard.png)
+
 Built this because the company I work for — a regulated financial services firm — had no real visibility into its own network. Alerts came from users complaining. I wanted to change that.
 
 STAR is a full-stack network monitoring platform I designed and built from scratch as the sole IT engineer. It watches the WAN, the LAN, switches, endpoints, Active Directory, and Microsoft 365 — and surfaces everything through a single dashboard with real-time WebSocket updates and Telegram/email notifications.
@@ -28,6 +30,8 @@ When something goes wrong on the network, the system doesn't just say "something
 
 One open incident per root cause. If the same condition fires again before resolution, it deduplicates rather than creating noise. Device-level incidents (`DEVICE_OFFLINE`, `interface_error`, `traffic_anomaly`) use `{category}:{affected_ip}` as the dedup key.
 
+![Latency Monitoring](./docs/latency.png)
+
 ---
 
 ## Stack
@@ -45,6 +49,8 @@ One open incident per root cause. If the same condition fires again before resol
 ## Frontend pages
 
 Dashboard, alert history, and a full network section: WAN/LAN overview, device registry, switch port metrics with delta counters, RTT latency charts, open/closed incidents, per-device drill-down, alert thresholds config, NinjaRMM patch compliance, Azure AD user monitor, and M365 service health. Plus system pages for DB stats, source status, and maintenance windows.
+
+![Device Investigation](./docs/investigation.png)
 
 ---
 
