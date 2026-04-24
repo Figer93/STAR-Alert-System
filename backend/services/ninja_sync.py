@@ -273,8 +273,8 @@ async def _sync_patch_status(
     # ── Source 2: os-patch-report → pending / failed counts ───────────────────
     try:
         report_rows = await _fetch_os_patch_report(token)
-    except Exception:
-        logger.exception("NinjaRMM: failed to fetch os-patch-report")
+    except Exception as exc:
+        logger.info("NinjaRMM: os-patch-report fetch failed — %s", repr(exc))
         report_rows = []
 
     if report_rows:
@@ -340,10 +340,13 @@ async def _sync_patch_status(
             # Log reboot-related fields for first 3 devices to aid diagnostics
             if reboot_logged < 3:
                 logger.info(
-                    "REBOOT FIELDS device %d: %s",
+                    "REBOOT FIELDS device %d: top=%s | os=%s | patches=%s | keys=%s",
                     ninja_id,
                     {k: v for k, v in dev.items()
                      if "reboot" in k.lower() or "pending" in k.lower()},
+                    dev.get("os"),
+                    dev.get("patches"),
+                    list(dev.keys()),
                 )
                 reboot_logged += 1
 
