@@ -7,14 +7,14 @@ Monitoring responsibilities are split by network location:
 **COLLECTOR** (on-premise, office LAN) — monitors only what it can
 always see regardless of internet state:
   - UniFi switch ports (errors, traffic, status)
-  - LAN devices: 10.2.1.253, 10.2.1.5, 10.2.1.3, 10.2.2.100
+  - LAN devices: 
   - pfSense LAN interface
   - NetFlow data
 
 **RAILWAY BACKEND** — monitors only external reachability:
-  - 1.1.1.1, 8.8.8.8 (external DNS)
-  - 164.39.40.113 (WAN1 gateway)
-  - 109.111.195.221 (WAN2 gateway)
+WAN1 gateway: <WAN1_GATEWAY_IP>
+WAN2 gateway: <WAN2_GATEWAY_IP>
+LAN devices: <LAN_IP_RANGE>
 
 During internet outage:
   - Railway detects WAN loss → creates ONE global incident
@@ -90,8 +90,8 @@ During internet outage:
 - Backend writes all received data to Supabase via SQLAlchemy
 
 ### fping targets
-- Collector pings LAN only: `10.2.1.253`, `10.2.1.5`, `10.2.1.3`, `10.2.2.100`
-- Railway backend pings WAN only: `1.1.1.1`, `8.8.8.8`, `164.39.40.113`, `109.111.195.221`
+- Collector pings LAN only: 
+- Railway backend pings WAN only:
 - Never overlap — adding a WAN target to the collector is wrong
 
 ---
